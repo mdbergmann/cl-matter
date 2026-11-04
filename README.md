@@ -90,6 +90,34 @@ loopback.
 ;; => 42, T
 ```
 
+## What's missing
+
+Nothing talks to a real Matter device yet. In the order it will be built:
+
+- **CASE** (certificate-based sessions): Sigma1..Sigma3, the operational
+  certificate chain, NOC/ICAC/RCAC TLV encoding, and the Matter X.509
+  profile. Nothing of it exists.
+- **Exchanges, MRP and the session manager**: the layer that pairs
+  requests with responses, retransmits unacknowledged reliable messages,
+  tracks peer counters per session and carries PASE/CASE over a socket.
+  Today the message codec, the counters, the receive window and the MRP
+  timing exist as functions, but nothing drives them from the network;
+  the PASE handshake runs in a loop of `pase-handle` calls, not over UDP.
+- **Message privacy** (the P flag, privacy keys): not implemented; group
+  messages and group keys likewise.
+- **Interaction model and clusters**: no Read/Write/Invoke/Subscribe, no
+  data model, no Basic Information or Descriptor cluster, so no
+  commissioning flow beyond the PASE session keys.
+- **Commissioning**: no device attestation, no CSR exchange, no fabric
+  provisioning; the commissionable-node mDNS advertisement is possible
+  with the responder, but the `_matterc._udp` TXT keys are not generated.
+- **SBCL backend**: multicast membership and interface enumeration are
+  still missing, so on SBCL the querier uses legacy unicast and the
+  responder cannot run.
+- **Interop**: nothing has been tried against chip-tool or a real device.
+  Everything so far is verified against specification and RFC vectors and
+  against the Matter SDK's test vectors only.
+
 ## Build and test
 
 ```
