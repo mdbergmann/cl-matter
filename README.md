@@ -36,7 +36,13 @@ examples (`test/tlv-test.lisp`). Message framing is in place: the message
 and protocol headers, whole unsecured messages, the Secure Channel status
 report, outgoing counters, the receive window that rejects duplicate and
 stale counters, and the MRP retransmission schedule (`test/message-test.lisp`).
-Encryption and sessions come next.
+The crypto primitives of the secure channel are in (`src/matter/crypto.lisp`):
+SHA-256, HMAC, HKDF and PBKDF2 (the runtime's native digests on AmiLisp,
+Ironclad on SBCL), AES-CCM built on Ironclad's AES since Ironclad has no CCM
+mode, the 13-octet message nonce, and `encode-secured-message` /
+`decode-secured-message` with the header as additional data and the 16-octet
+MIC, checked against RFC 3610, SP 800-38C and OpenSSL vectors
+(`test/crypto-test.lisp`). PASE and CASE come next.
 
 ```lisp
 (dns-sd:browse "_http._tcp")
@@ -81,4 +87,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. Then the session layer with Ironclad: PASE, CASE.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. Then the session layer: PASE (SPAKE2+ on Ironclad's P-256), CASE.

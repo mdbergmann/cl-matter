@@ -46,6 +46,7 @@
   :license "Apache-2"
   :description "Matter (CSA) protocol for Common Lisp: TLV, secure sessions and the interaction model over IPv6, discovery via mDNS/DNS-SD."
   :depends-on ("alexandria"
+               "ironclad"
                "cl-matter/net"
                "cl-matter/dns-sd")
   :components ((:module "src/matter"
@@ -53,7 +54,8 @@
                 :components
                 ((:file "package")
                  (:file "tlv")
-                 (:file "message"))))
+                 (:file "message")
+                 (:file "crypto"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -67,7 +69,8 @@
                  (:file "net-test")
                  (:file "dns-sd-test")
                  (:file "tlv-test")
-                 (:file "message-test"))))
+                 (:file "message-test")
+                 (:file "crypto-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

@@ -147,5 +147,19 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:mrp-track
    #:mrp-acknowledge
    #:mrp-due
-   #:mrp-next-deadline))
-
+   #:mrp-next-deadline
+   ;; crypto (crypto.lisp)
+   #:crypto-error
+   #:crypto-error-message
+   #:aead-authentication-error
+   #:sha256
+   #:hmac-sha256
+   #:pbkdf2-sha256
+   #:hkdf-sha256
+   #:random-octets
+   #:aes-ccm-encrypt
+   #:aes-ccm-decrypt
+   #:message-nonce
+   #:message-header-nonce
+   #:encode-secured-message
+   #:decode-secured-message))
