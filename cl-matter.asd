@@ -55,7 +55,9 @@
                 ((:file "package")
                  (:file "tlv")
                  (:file "message")
-                 (:file "crypto"))))
+                 (:file "crypto")
+                 (:file "spake2p")
+                 (:file "pase"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -70,7 +72,9 @@
                  (:file "dns-sd-test")
                  (:file "tlv-test")
                  (:file "message-test")
-                 (:file "crypto-test"))))
+                 (:file "crypto-test")
+                 (:file "spake2p-test")
+                 (:file "pase-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

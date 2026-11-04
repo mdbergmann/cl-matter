@@ -42,7 +42,26 @@ Ironclad on SBCL), AES-CCM built on Ironclad's AES since Ironclad has no CCM
 mode, the 13-octet message nonce, and `encode-secured-message` /
 `decode-secured-message` with the header as additional data and the 16-octet
 MIC, checked against RFC 3610, SP 800-38C and OpenSSL vectors
-(`test/crypto-test.lisp`). PASE and CASE come next.
+(`test/crypto-test.lisp`). PASE is done: SPAKE2+ on P-256
+(`src/matter/spake2p.lisp`, the RFC 9383 construction with Matter's key
+schedule, verified against the RFC's and the Matter SDK's vectors,
+`test/spake2p-test.lisp`) and the five-message handshake
+(`src/matter/pase.lisp`): the PBKDFParam and Pake message codecs, session
+parameters, and an initiator and a responder driven by `pase-handle` with
+(opcode, payload) pairs, so a whole handshake runs without a socket
+(`test/pase-test.lisp`). CASE comes next.
+
+```lisp
+;; the commissionee stores a verifier, never the passcode
+(cl-matter:spake2p-verifier 20202021 salt 1000)        ; => 97 octets, w0 || L
+(cl-matter:make-pase-responder :verifier * :salt salt :iterations 1000 :local-session-id 2)
+;; the commissioner knows the passcode
+(cl-matter:make-pase-initiator :passcode 20202021 :local-session-id 1)
+(cl-matter:pase-start initiator)                       ; => #x20, PBKDFParamRequest octets
+(cl-matter:pase-handle responder #x20 octets)          ; => #x21, PBKDFParamResponse octets
+;; ... Pake1, Pake2, Pake3, StatusReport; then on both sides
+(cl-matter:pase-session-keys initiator)                ; => I2R, R2I, attestation challenge
+```
 
 ```lisp
 (dns-sd:browse "_http._tcp")
@@ -87,4 +106,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. Then the session layer: PASE (SPAKE2+ on Ironclad's P-256), CASE.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. Then CASE, exchanges and the session manager over the net backend.
