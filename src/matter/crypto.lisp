@@ -36,6 +36,33 @@
     (%crypto-fail "~a must be an octet vector, got ~s" what x))
   (if (typep x 'octets) x (%octets x)))
 
+(defun %concat-octets (&rest vectors)
+  (let ((out (make-array (reduce #'+ vectors :key #'length) :element-type '(unsigned-byte 8)))
+        (pos 0))
+    (dolist (v vectors out)
+      (replace out v :start1 pos)
+      (incf pos (length v)))))
+
+(defun %ascii-octets (string)
+  (map '(simple-array (unsigned-byte 8) (*)) #'char-code string))
+
+(defun %hex-octets (string)
+  (let ((out (make-array (floor (length string) 2) :element-type '(unsigned-byte 8))))
+    (dotimes (i (length out) out)
+      (setf (aref out i) (parse-integer string :start (* 2 i) :end (+ 2 (* 2 i)) :radix 16)))))
+
+(defun %octets-integer (octets)
+  "Big-endian OCTETS -> integer."
+  (let ((n 0))
+    (loop :for octet :across octets :do (setf n (logior (ash n 8) octet)))
+    n))
+
+(defun %integer-octets (n length)
+  "N -> LENGTH big-endian octets."
+  (let ((out (make-array length :element-type '(unsigned-byte 8))))
+    (dotimes (i length out)
+      (setf (aref out (- length 1 i)) (ldb (byte 8 (* 8 i)) n)))))
+
 ;;; ------------------------------------------------------------------
 ;;; Digests
 

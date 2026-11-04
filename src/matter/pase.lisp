@@ -226,13 +226,6 @@ specification asks."
   "An anonymous TLV structure of the ELEMENTS that are not NIL (optional fields)."
   (make-tlv-element nil :structure (remove nil elements)))
 
-(defun %concat-octets (&rest vectors)
-  (let ((out (make-array (reduce #'+ vectors :key #'length) :element-type '(unsigned-byte 8)))
-        (pos 0))
-    (dolist (v vectors out)
-      (replace out v :start1 pos)
-      (incf pos (length v)))))
-
 (defun %tlv-message (octets what)
   "OCTETS -> the one anonymous TLV structure they hold."
   (multiple-value-bind (element end)
@@ -339,9 +332,10 @@ the responder with R2I; the challenge is for device attestation."
   (r2i nil)
   (attestation-challenge nil))
 
-(defun derive-session-keys (ke)
-  "I2RKey || R2IKey || AttestationChallenge = HKDF(KE, nil, \"SessionKeys\", 48)."
-  (let ((material (hkdf-sha256 ke nil (%ascii-octets "SessionKeys")
+(defun derive-session-keys (secret &key salt (info "SessionKeys"))
+  "I2RKey || R2IKey || AttestationChallenge = HKDF(SECRET, SALT, INFO, 48):
+PASE's Ke with no salt, CASE's shared secret with its transcript salt."
+  (let ((material (hkdf-sha256 secret salt (%ascii-octets info)
                                (+ (* 2 +session-key-length+) +attestation-challenge-length+))))
     (make-session-keys :i2r (subseq material 0 +session-key-length+)
                        :r2i (subseq material +session-key-length+ (* 2 +session-key-length+))

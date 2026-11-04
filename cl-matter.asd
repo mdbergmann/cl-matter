@@ -56,8 +56,13 @@
                  (:file "tlv")
                  (:file "message")
                  (:file "crypto")
+                 (:file "p256")
                  (:file "spake2p")
-                 (:file "pase"))))
+                 (:file "pase")
+                 (:file "asn1")
+                 (:file "certificate")
+                 (:file "fabric")
+                 (:file "case"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -74,7 +79,10 @@
                  (:file "message-test")
                  (:file "crypto-test")
                  (:file "spake2p-test")
-                 (:file "pase-test"))))
+                 (:file "pase-test")
+                 (:file "sdk-certificates")
+                 (:file "certificate-test")
+                 (:file "case-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

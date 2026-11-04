@@ -49,7 +49,15 @@ schedule, verified against the RFC's and the Matter SDK's vectors,
 (`src/matter/pase.lisp`): the PBKDFParam and Pake message codecs, session
 parameters, and an initiator and a responder driven by `pase-handle` with
 (opcode, payload) pairs, so a whole handshake runs without a socket
-(`test/pase-test.lisp`). CASE comes next.
+(`test/pase-test.lisp`). CASE is done too: P-256 key pairs, ECDH and ECDSA
+(`src/matter/p256.lisp`), Matter operational certificates with their
+mapping to X.509 DER, chain validation and the generation of an
+RCAC/ICAC/NOC chain of our own (`src/matter/certificate.lisp`, byte-exact
+against the SDK's test certificates in `test/sdk-certificates.lisp`),
+fabrics with the compressed fabric id, the IPK and the CASE destination id
+(`src/matter/fabric.lisp`, the specification's vectors), and the Sigma
+handshake with session resumption (`src/matter/case.lisp`), driven like
+PASE by `case-handle` (`test/case-test.lisp`).
 
 ```lisp
 ;; the commissionee stores a verifier, never the passcode
@@ -61,6 +69,21 @@ parameters, and an initiator and a responder driven by `pase-handle` with
 (cl-matter:pase-handle responder #x20 octets)          ; => #x21, PBKDFParamResponse octets
 ;; ... Pake1, Pake2, Pake3, StatusReport; then on both sides
 (cl-matter:pase-session-keys initiator)                ; => I2R, R2I, attestation challenge
+```
+
+```lisp
+;; a fabric: the credentials, the key pair the NOC certifies, the IPK epoch key
+(cl-matter:make-fabric :rcac rcac :icac icac :noc noc
+                       :operational-keypair keypair :epoch-key epoch-key)
+(cl-matter:make-test-fabric :fabric-id #x1D :node-id 1 :icac t)   ; generated credentials
+;; CASE between two nodes of the fabric
+(cl-matter:make-case-initiator :fabric a :peer-node-id 2 :local-session-id 1)
+(cl-matter:make-case-responder :fabrics (list b) :local-session-id 2)
+(cl-matter:case-start initiator)                       ; => #x30, Sigma1 octets
+(cl-matter:case-handle responder #x30 octets)          ; => #x31, Sigma2 octets
+;; ... Sigma3, StatusReport; then on both sides
+(cl-matter:case-session-keys initiator)                ; => I2R, R2I, attestation challenge
+(cl-matter:case-resumption-state initiator)            ; keep it: the next session resumes
 ```
 
 ```lisp
@@ -94,15 +117,17 @@ loopback.
 
 Nothing talks to a real Matter device yet. In the order it will be built:
 
-- **CASE** (certificate-based sessions): Sigma1..Sigma3, the operational
-  certificate chain, NOC/ICAC/RCAC TLV encoding, and the Matter X.509
-  profile. Nothing of it exists.
 - **Exchanges, MRP and the session manager**: the layer that pairs
   requests with responses, retransmits unacknowledged reliable messages,
   tracks peer counters per session and carries PASE/CASE over a socket.
   Today the message codec, the counters, the receive window and the MRP
   timing exist as functions, but nothing drives them from the network;
-  the PASE handshake runs in a loop of `pase-handle` calls, not over UDP.
+  the PASE and CASE handshakes run in loops of `pase-handle` /
+  `case-handle` calls, not over UDP.
+- **Certificates**: X.509 DER is only written, never read, so a
+  certificate must arrive in Matter TLV form (as it does on the wire);
+  there is no PEM/DER import, no CSR, and no device attestation
+  certificates (PAI/DAC) or certification declarations.
 - **Message privacy** (the P flag, privacy keys): not implemented; group
   messages and group keys likewise.
 - **Interaction model and clusters**: no Read/Write/Invoke/Subscribe, no
@@ -134,4 +159,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. Then CASE, exchanges and the session manager over the net backend.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. Then exchanges and the session manager over the net backend.

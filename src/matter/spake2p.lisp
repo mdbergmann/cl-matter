@@ -29,14 +29,7 @@
   (error 'spake2p-error :message (apply #'format nil format args)))
 
 ;;; ------------------------------------------------------------------
-;;; P-256
-
-(defconstant +p256-scalar-length+ 32)
-(defconstant +p256-point-length+ 65 "An uncompressed SEC 1 point: 04 || x || y.")
-
-(defparameter *p256-order*
-  115792089210356248762697446949407573529996955224135760342422259061068512044369
-  "The order n of the P-256 base point.")
+;;; P-256 points as SPAKE2+ sees them (the arithmetic is in p256.lisp)
 
 (defun %p256-decode-point (octets what)
   "OCTETS (65, uncompressed) -> an Ironclad point on the curve, or SPAKE2P-ERROR."
@@ -53,35 +46,6 @@ valid share, Z or V)."
   (handler-case (ironclad:ec-encode-point point)
     (error () (%spake2p-fail "~a is the point at infinity" what))))
 
-(defun %p256-generator ()
-  (ironclad:ec-decode-point
-   :secp256r1
-   (%hex-octets "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")))
-
-(defun %p256-mul (point k) (ironclad:ec-scalar-mult point k))
-(defun %p256-add (p q) (ironclad:ec-add p q))
-
-(defun %p256-neg (point)
-  "-POINT, as (n - 1) * POINT."
-  (ironclad:ec-scalar-mult point (1- *p256-order*)))
-
-(defun %hex-octets (string)
-  (let ((out (make-array (floor (length string) 2) :element-type '(unsigned-byte 8))))
-    (dotimes (i (length out) out)
-      (setf (aref out i) (parse-integer string :start (* 2 i) :end (+ 2 (* 2 i)) :radix 16)))))
-
-(defun %octets-integer (octets)
-  "Big-endian OCTETS -> integer."
-  (let ((n 0))
-    (loop :for octet :across octets :do (setf n (logior (ash n 8) octet)))
-    n))
-
-(defun %integer-octets (n length)
-  "N -> LENGTH big-endian octets."
-  (let ((out (make-array length :element-type '(unsigned-byte 8))))
-    (dotimes (i length out)
-      (setf (aref out (- length 1 i)) (ldb (byte 8 (* 8 i)) n)))))
-
 (defun %scalar (value what)
   "VALUE, an integer or a 32-octet big-endian vector -> an integer in [1, n-1]."
   (let ((n (cond ((integerp value) value)
@@ -94,11 +58,6 @@ valid share, Z or V)."
     (unless (< 0 n *p256-order*)
       (%spake2p-fail "~a must be in [1, n-1] of P-256, got ~d" what n))
     n))
-
-(defun random-p256-scalar ()
-  "A uniform scalar in [1, n-1] from the cryptographic random source."
-  (loop :for k := (%octets-integer (random-octets +p256-scalar-length+))
-        :when (< 0 k *p256-order*) :return k))
 
 ;;; The fixed points M and N of RFC 9383 section 4 for P-256 (uncompressed;
 ;;; the RFC lists them compressed and the transcript carries them uncompressed).
@@ -290,6 +249,3 @@ SPAKE2P-CONFIRMATION-ERROR; afterwards SPAKE2P-KE is the shared key."
     (%spake2p-fail "SPAKE2+ ~a: the shared key is available only after the peer is confirmed"
                    (spake2p-role s)))
   (spake2p-ke s))
-
-(defun %ascii-octets (string)
-  (map '(simple-array (unsigned-byte 8) (*)) #'char-code string))
