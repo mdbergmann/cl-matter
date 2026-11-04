@@ -52,7 +52,8 @@
                 :serial t
                 :components
                 ((:file "package")
-                 (:file "tlv"))))
+                 (:file "tlv")
+                 (:file "message"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -65,7 +66,8 @@
                 ((:file "test-all")
                  (:file "net-test")
                  (:file "dns-sd-test")
-                 (:file "tlv-test"))))
+                 (:file "tlv-test")
+                 (:file "message-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

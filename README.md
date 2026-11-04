@@ -32,7 +32,11 @@ known answers, uses the legacy unicast format for queries from other ports,
 and says goodbye on stop. The Matter TLV codec is complete:
 `tlv-encode` / `tlv-decode` over `tlv-element` structs with every tag form
 and element type of Appendix A, verified against the specification's
-examples (`test/tlv-test.lisp`).
+examples (`test/tlv-test.lisp`). Message framing is in place: the message
+and protocol headers, whole unsecured messages, the Secure Channel status
+report, outgoing counters, the receive window that rejects duplicate and
+stale counters, and the MRP retransmission schedule (`test/message-test.lisp`).
+Encryption and sessions come next.
 
 ```lisp
 (dns-sd:browse "_http._tcp")
@@ -77,4 +81,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. Then the session layer with Ironclad.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. Then the session layer with Ironclad: PASE, CASE.
