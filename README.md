@@ -115,7 +115,16 @@ commissioner's side and hands back the onboarding payload the next
 administrator types in. `test/commissioning-test.lisp`
 runs the flow on the in-memory rig and over UDP, drives every cluster
 command by hand, lets fail-safes and windows expire, and brings a second
-administrator in through a window the first one opened. The ACL is enforced
+administrator in through a window the first one opened. What of this
+survives a restart is `src/matter/persistence.lisp`: the fabric table with
+its operational keys and IPKs, the ACL, the CASE resumption records and
+the attributes administrators wrote, as a plist of plain data
+(`device-state`) that `make-device :storage` keeps in a file by itself,
+committed at CommissioningComplete and never while a fail-safe still holds
+a fabric; a commissioner keeps its fabric, its root key and its resumption
+records the same way (`commissioner-state`, `make-commissioner :state`).
+`test/persistence-test.lisp` restarts both from their files and resumes
+the session between them. The ACL is enforced
 (`src/matter/access.lisp`, section 6.6): every attribute names the
 privilege it takes to read and to write it and every command the one to
 invoke it (`define-cluster`'s `:read`, `:write` and `:access`, with the
@@ -216,6 +225,12 @@ reads, writes, invokes and subscriptions.
 (cl-matter:encode-manual-pairing-code *next*)          ; => "02757-612-6473" style, 11 digits
 ;; the device's side: (open-commissioning-window *device* :timeout 300) re-opens the basic
 ;; window; :mode :enhanced with :verifier/:salt/:iterations/:discriminator is what the cluster does
+;; across a restart: the fabric table with its keys, the ACL, the resumption records and the
+;; attributes administrators wrote live in a state file the device keeps by itself
+(cl-matter:make-device ... :storage "~/.cl-matter/lamp.state")   ; restored when it exists, rewritten on change
+(cl-matter:device-state *device*)                      ; the committed state, a plist of plain data
+(cl-matter:write-state-file (cl-matter:commissioner-state *admin*) path)   ; a commissioner's too
+(cl-matter:make-commissioner *m-sc* *m-im* :state (cl-matter:read-state-file path))  ; resumes its sessions
 ```
 
 ```lisp
@@ -295,9 +310,9 @@ Nothing talks to a real Matter device yet. In the order it will be built:
 - **Access control**: the Group auth mode never matches (there are no
   group sessions), the ACL's Extension attribute is not served, and
   Matter 1.4's Access Restriction List is not implemented.
-- **Commissioning**: the fabric table lives in memory (the application
-  keeps and restores `device-fabrics`), and the Network Commissioning
-  cluster is Ethernet only (no Wi-Fi or Thread configuration).
+- **Commissioning**: the Network Commissioning cluster is Ethernet only
+  (no Wi-Fi or Thread configuration), and group key sets are neither
+  served nor kept.
 - **Discovery**: the advertisements are made and read, but the device does
   not keep advertising with `CM=0` after commissioning (extended
   discovery), the rotating device identifier is passed in rather than
@@ -327,4 +342,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. Next: fabric persistence.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done.

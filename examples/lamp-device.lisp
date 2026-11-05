@@ -7,8 +7,10 @@
 ;;;;
 ;;;; Environment: LAMP_PORT (5540), LAMP_PASSCODE (20202021), LAMP_DISCRIMINATOR
 ;;;; (3840), LAMP_INTERFACE (advertise and multicast on this interface only,
-;;;; "en0"), LAMP_TRACE (set for the exchange trace), AMILISP_REPO (where
-;;;; lib/quicklisp-compat.lisp is; default ../../amigastuff/cl-amiga from here).
+;;;; "en0"), LAMP_TRACE (set for the exchange trace), LAMP_STORAGE (the
+;;;; state file, default ~/.cl-matter/lamp-device.state; empty for none),
+;;;; AMILISP_REPO (where lib/quicklisp-compat.lisp is; default
+;;;; ../../amigastuff/cl-amiga from here).
 ;;;;
 ;;;; The device listens on every IPv6 address (Matter is IPv6), advertises
 ;;;; itself over mDNS with the SDK's example credentials (vendor FFF1,
@@ -17,6 +19,11 @@
 ;;;;
 ;;;;   chip-tool pairing code 1 34970112332
 ;;;;   chip-tool onoff toggle 1 1
+;;;;
+;;;; Its fabrics, ACL and resumption records are kept in the state file, so
+;;;; a lamp started again is still commissioned: chip-tool finds it by its
+;;;; operational advertisement and talks to it at once.  Delete the file
+;;;; (or `chip-tool pairing unpair 1`) to start over.
 
 (require "asdf")
 (load "~/quicklisp/setup.lisp")
@@ -42,6 +49,11 @@
 (defparameter *salt* (map '(vector (unsigned-byte 8)) #'char-code "SPAKE2P Key Salt"))
 
 (defparameter *interface* (uiop:getenv "LAMP_INTERFACE"))
+(defparameter *storage*
+  (let ((value (uiop:getenv "LAMP_STORAGE")))
+    (cond ((null value) (merge-pathnames ".cl-matter/lamp-device.state" (user-homedir-pathname)))
+          ((plusp (length value)) value)
+          (t nil))))
 
 (defun link-local-p (address)
   (and (> (length address) 4) (string-equal "fe80" address :end2 4)))
@@ -85,6 +97,7 @@ with nothing but a link-local address is left out), or of *INTERFACE*."
        (device (make-device :node node :channel channel :model model
                             :credentials (test-attestation-credentials)
                             :discriminator *discriminator* :passcode *passcode* :salt *salt* :iterations 1000
+                            :storage *storage*
                             :on-commissioned (lambda (device fabric)
                                                (declare (ignore device))
                                                (say "*** commissioned into fabric ~16,'0x as node ~16,'0x (index ~d)"
@@ -99,7 +112,11 @@ with nothing but a link-local address is left out), or of *INTERFACE*."
     (say "advertising ~{~a~^, ~}" addresses)
     (start-device-advertising device :addresses addresses :interface *interface* :device-name "Lamp"
                                      :device-type +device-type-on-off-light+ :pairing-hint 33))
-  (say "discriminator ~d, passcode ~d" *discriminator* *passcode*)
+  (when *storage* (say "state file ~a" *storage*))
+  (if (device-fabrics device)
+      (say "commissioned into ~d fabric~:p: ~{~a~^, ~} -- the window stays closed"
+           (length (device-fabrics device)) (device-fabrics device))
+      (say "discriminator ~d, passcode ~d" *discriminator* *passcode*))
   (say "QR code      ~a" (encode-qr-code payload))
   (say "manual code  ~a" (encode-manual-pairing-code payload))
   (say "on the air: ~{~a~^, ~}" (mapcar #'dns-sd:service-instance-name (device-advertised-services device)))

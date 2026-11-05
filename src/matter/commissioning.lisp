@@ -33,8 +33,8 @@
 ;;;; The mDNS advertisements that go with the window and the fabric table
 ;;;; are discovery.lisp's; the device tells it through ON-ADVERTISING-CHANGE.
 ;;;;
-;;;; Not done: UpdateNOC and RemoveFabric beyond the basics, persistence of
-;;;; the fabric table.
+;;;; What of all this survives a restart -- the fabric table, the ACL, the
+;;;; resumption records -- is persistence.lisp's.
 
 (in-package :cl-matter)
 
@@ -290,6 +290,8 @@ into (FABRICs with their indices)."
   basic-verifier basic-salt basic-iterations ; the device's own PASE parameters: what the basic window accepts
   on-commissioned
   on-fabric-removed
+  on-state-change                       ; called with the device when its persistent state changed
+  storage                               ; the state file MAKE-DEVICE :STORAGE keeps, or NIL
   on-advertising-change                 ; called with the device when what it should advertise changed
   advertiser                            ; what START-DEVICE-ADVERTISING keeps (discovery.lisp)
   timer
@@ -340,7 +342,7 @@ advertises the device (START-DEVICE-ADVERTISING) is told."
                       passcode salt iterations verifier window-timeout (discriminator (random-discriminator))
                       (location-capability +regulatory-indoor-outdoor+) (regulatory-config location-capability)
                       (fail-safe-expiry 60) (ethernet-interface "eth0")
-                      on-commissioned on-fabric-removed)
+                      on-commissioned on-fabric-removed state storage on-state-change)
   "A device from NODE (a data model with a root endpoint holding Basic
 Information; MAKE-BASIC-NODE makes one), CHANNEL (its Secure Channel) and
 MODEL (its Interaction Model serving NODE, made here when NIL), with the
@@ -352,9 +354,14 @@ parameters: they open the basic commissioning window at once, for
 WINDOW-TIMEOUT seconds (default: until it is closed), and an administrator
 can open it again with OpenBasicCommissioningWindow; DISCRIMINATOR
 (default: random) is the 12-bit one of the onboarding payload that the
-commissionable advertisement carries.  ON-COMMISSIONED is called with the
-device and the new fabric after CommissioningComplete, ON-FABRIC-REMOVED
-with the device and a fabric that was removed."
+commissionable advertisement carries.  STATE is a DEVICE-STATE to
+restore, STORAGE a file to keep one in: it is restored from there when it
+exists and rewritten after every change (persistence.lisp).  A device
+that comes up with fabrics does not open its window: its administrators
+do.  ON-COMMISSIONED is called with the device and the new fabric after
+CommissioningComplete, ON-FABRIC-REMOVED with the device and a fabric
+that was removed, ON-STATE-CHANGE with the device when what DEVICE-STATE
+returns changed."
   (unless (node-p node) (error "MAKE-DEVICE needs a NODE"))
   (unless (secure-channel-p channel) (error "MAKE-DEVICE needs the node's SECURE-CHANNEL"))
   (let* ((manager (secure-channel-manager channel))
@@ -366,7 +373,8 @@ with the device and a fabric that was removed."
                                :product-id (or product-id (attribute-value basic 'product-id))
                                :discriminator (%check-id discriminator 12 "the discriminator")
                                :max-fabrics max-fabrics
-                               :on-commissioned on-commissioned :on-fabric-removed on-fabric-removed)))
+                               :on-commissioned on-commissioned :on-fabric-removed on-fabric-removed
+                               :on-state-change on-state-change :storage storage)))
     (unless (eq (interaction-model-node model) node) (error "the Interaction Model does not serve this node"))
     (when (and vendor-id (/= vendor-id (attribute-value basic 'vendor-id)))
       (setf (attribute-value basic 'vendor-id) vendor-id))
@@ -392,14 +400,17 @@ with the device and a fabric that was removed."
             (device-basic-salt device) (%check-pbkdf-parameters salt iterations)
             (device-basic-iterations device) iterations))
     (%install-handlers device)
+    (let ((state (or state (and storage (read-state-file storage)))))
+      (when state (restore-device-state device state)))
     (dolist (fabric fabrics) (%install-fabric device fabric))
+    (%watch-device-state device)
     (setf (device-timer device) (add-timer manager (lambda (now) (%device-timer device now))))
     (let ((previous (secure-channel-on-session-closed channel)))
       (setf (secure-channel-on-session-closed channel)
             (lambda (channel session)
               (when previous (funcall previous channel session))
               (%device-session-closed device session))))
-    (when (device-basic-verifier device)
+    (when (and (device-basic-verifier device) (null (device-fabrics device)))
       (open-commissioning-window device :timeout window-timeout))
     device))
 
@@ -538,8 +549,10 @@ Commissioning attributes and the advertisement follow."
   (%refresh-credentials device)
   (%advertising-changed device)
   (%trace-device device "fabric ~a removed" fabric)
-  (when (and notify (device-on-fabric-removed device))
-    (funcall (device-on-fabric-removed device) device fabric))
+  (when notify                          ; a fail-safe reverting what it added changes nothing kept
+    (%state-changed device)
+    (when (device-on-fabric-removed device)
+      (funcall (device-on-fabric-removed device) device fabric)))
   fabric)
 
 (defun remove-device-fabric (device fabric)
@@ -575,6 +588,8 @@ after AddNOC and skips straight to CASE."
     (when fail-safe
       (setf (device-fail-safe device) nil
             (attribute-value (device-general-commissioning device) 'breadcrumb) 0)
+      (unless revert                    ; what was done under it is committed now
+        (%state-changed device))
       (when revert
         (%trace-device device "fail-safe expired: reverting")
         (let ((added (fail-safe-added-fabric fail-safe))
@@ -883,6 +898,7 @@ the next time to look."
            (%noc-response +noc-status-label-conflict+ :fabric-index (fabric-index fabric)))
           (t (setf (fabric-label fabric) label)
              (%refresh-credentials device)
+             (%state-changed device)
              (%noc-response +noc-status-ok+ :fabric-index (fabric-index fabric))))))
 
 (defun %remove-fabric (device cluster fields)
@@ -973,15 +989,21 @@ and the ROOT-KEYPAIR (and ICA-KEYPAIR under an ICAC) that issue NOCs."
 
 (defun make-commissioner (channel model &key fabric root-keypair ica-keypair (vendor-id #xFFF1)
                                             (fabric-id 1) (node-id 1) (first-node-id 2)
-                                            (trust-store *paa-trust-store*) (cd-signing-keys *cd-signing-keys*))
+                                            (trust-store *paa-trust-store*) (cd-signing-keys *cd-signing-keys*)
+                                            state)
   "A commissioner on CHANNEL (its Secure Channel) and MODEL (its
 Interaction Model).  FABRIC with ROOT-KEYPAIR (and ICA-KEYPAIR when the
 NOCs come from an ICAC) are the fabric it administers; without them a
 fabric FABRIC-ID is created with this node as NODE-ID.  Devices get node
 ids from FIRST-NODE-ID up.  TRUST-STORE and CD-SIGNING-KEYS are what
-attestation is checked against."
+attestation is checked against.  STATE, a COMMISSIONER-STATE, brings all
+of the fabric, its key pairs, the next node id and the resumption records
+back from an earlier run."
   (unless (eq (secure-channel-manager channel) (interaction-model-manager model))
     (error "the channel and the model must share one exchange manager"))
+  (when state
+    (return-from make-commissioner
+      (%commissioner-from-state state channel model :trust-store trust-store :cd-signing-keys cd-signing-keys)))
   (if fabric
       (unless root-keypair (error "a commissioner's fabric needs its root key pair to issue NOCs"))
       (multiple-value-setq (fabric root-keypair ica-keypair)

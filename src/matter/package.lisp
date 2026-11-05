@@ -822,7 +822,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:device-fail-safe #:device-general-commissioning #:device-operational-credentials
    #:device-network-commissioning #:device-access-control #:device-administrator-commissioning
    #:device-window-mode #:device-window-expiry #:device-window-discriminator #:device-window-fabric
-   #:device-on-commissioned #:device-on-fabric-removed
+   #:device-on-commissioned #:device-on-fabric-removed #:device-on-state-change #:device-storage
    #:device-now #:device-acl #:find-device-fabric #:remove-device-fabric
    #:open-commissioning-window #:close-commissioning-window #:commissioning-window-open-p
    #:commissioner #:commissioner-p #:make-commissioner #:commissioner-channel #:commissioner-model
@@ -833,6 +833,9 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:commissioning-condition #:commissioning-pase-session #:commissioning-case-session
    #:commissioning-running-p #:commissioning-complete-p #:commissioning-failed-p
    #:start-commissioning #:commissioning-wait #:commission
+   ;; persistence (persistence.lisp)
+   #:+state-format+ #:state-error #:state-error-message #:write-state-file #:read-state-file
+   #:fabric-state #:fabric-from-state #:device-state #:restore-device-state #:commissioner-state
    #:device-discriminator #:device-on-advertising-change #:random-discriminator
    ;; discovery (discovery.lisp)
    #:*commissionable-service-type* #:*operational-service-type* #:*commissioner-service-type*

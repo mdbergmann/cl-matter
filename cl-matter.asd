@@ -74,6 +74,7 @@
                  (:file "access")
                  (:file "interaction")
                  (:file "commissioning")
+                 (:file "persistence")
                  (:file "discovery"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
@@ -102,6 +103,7 @@
                  (:file "sdk-attestation")
                  (:file "attestation-test")
                  (:file "commissioning-test")
+                 (:file "persistence-test")
                  (:file "discovery-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
