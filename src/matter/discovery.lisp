@@ -429,13 +429,19 @@ the OPTIONS the services are built with."
 (defun %device-port (device)
   (nth-value 1 (transport-local-endpoint (exchange-manager-transport (device-manager device)))))
 
+(defun %window-commissioning-mode (device)
+  "The CM value of the open window: 1 for the basic, 2 for one an administrator opened."
+  (ecase (device-window-mode device)
+    (:basic +commissioning-mode-basic+)
+    (:enhanced +commissioning-mode-enhanced+)))
+
 (defun device-services (device &key (port (%device-port device)) (instance (random-instance-name))
-                                 (commissioning-mode +commissioning-mode-basic+) device-type device-name
+                                 device-type device-name
                                  rotating-id pairing-hint pairing-instruction (tcp 0) (icd 0))
   "The DNS-SD services DEVICE should advertise now: a commissionable one
-while its window is open (with INSTANCE and COMMISSIONING-MODE), an
-operational one per fabric.  The MRP intervals are the manager's session
-parameters."
+while its window is open (under INSTANCE, with the window's discriminator
+and commissioning mode), an operational one per fabric.  The MRP intervals
+are the manager's session parameters."
   (let* ((parameters (session-manager-session-parameters (exchange-manager-session-manager (device-manager device))))
          (mrp (list :idle-interval (%session-parameters-seconds parameters #'session-parameters-idle-interval
                                                                *mrp-default-idle-interval*)
@@ -446,9 +452,9 @@ parameters."
                     :tcp tcp :icd icd))
          (services '()))
     (when (commissioning-window-open-p device)
-      (push (apply #'commissionable-service :discriminator (device-discriminator device) :port port :instance instance
+      (push (apply #'commissionable-service :discriminator (device-window-discriminator device) :port port :instance instance
                    :vendor-id (device-vendor-id device) :product-id (device-product-id device)
-                   :commissioning-mode commissioning-mode :device-type device-type :device-name device-name
+                   :commissioning-mode (%window-commissioning-mode device) :device-type device-type :device-name device-name
                    :rotating-id rotating-id :pairing-hint pairing-hint :pairing-instruction pairing-instruction
                    mrp)
             services))
@@ -470,7 +476,7 @@ application put on a shared responder stay as they are."
 
 (defun start-device-advertising (device &key responder host addresses interface socket (probe t) (thread t)
                                           port (instance (random-instance-name))
-                                          (commissioning-mode +commissioning-mode-basic+) device-type device-name
+                                          device-type device-name
                                           rotating-id pairing-hint pairing-instruction (tcp 0) (icd 0))
   "Advertise DEVICE over mDNS and keep the advertisement in step with its
 commissioning window and fabric table.  RESPONDER is a running DNS-SD
@@ -481,7 +487,7 @@ PORT defaults to the one the device's transport is bound to.  The other
 keys are COMMISSIONABLE-SERVICE's.  Returns the DEVICE-ADVERTISER; see
 DEVICE-ADVERTISED-SERVICES for what is on the air."
   (when (device-advertiser device) (error "~a is already advertising" device))
-  (let* ((options (list :port (or port (%device-port device)) :commissioning-mode commissioning-mode
+  (let* ((options (list :port (or port (%device-port device))
                         :device-type device-type :device-name device-name :rotating-id rotating-id
                         :pairing-hint pairing-hint :pairing-instruction pairing-instruction :tcp tcp :icd icd))
          (services (apply #'device-services device :instance instance options))
@@ -562,3 +568,53 @@ makes, or NIL when nothing answered within TIMEOUT seconds."
                                         :socket socket :timeout timeout)))
            (and service (%resolved-node service)))
       (when owns-socket-p (dns-sd:close-mdns-socket socket)))))
+
+;;; ------------------------------------------------------------------
+;;; An administrator opens the window for the next one (11.19)
+
+(defun %check-command-response (response what)
+  "RESPONSE, an INVOKE-RESPONSE: its value, or an INTERACTION-ERROR with the
+status (and cluster status) the node answered WHAT with."
+  (multiple-value-bind (value kind) (invoke-response-value response)
+    (when (and (eq kind :status) (not (im-status-success-p value)))
+      (error 'interaction-error :status (im-status-status value) :cluster-status (im-status-cluster-status value)
+                                :message (format nil "~a was answered ~a" what value)))
+    value))
+
+(defun start-commissioning-window-request (commissioner session
+                                           &key (passcode (random-passcode)) (discriminator (random-discriminator))
+                                             (timeout +max-commissioning-timeout+) (iterations 1000) (salt (random-octets 32))
+                                             (vendor-id 0) (product-id 0) (timed 10) on-complete)
+  "Ask the node on SESSION, a CASE session the commissioner holds as its
+administrator, to open an enhanced commissioning window for TIMEOUT
+seconds (180..900): the node then accepts PASE with PASSCODE (default:
+random; SALT and ITERATIONS make the verifier it is sent) and advertises
+under DISCRIMINATOR (default: random).  Returns (values interaction
+payload): the INTERACTION of the timed OpenCommissioningWindow invoke, and
+the ONBOARDING-PAYLOAD -- with VENDOR-ID and PRODUCT-ID when known -- whose
+QR or manual pairing code the next administrator needs once the interaction
+has succeeded.  ON-COMPLETE is called with both."
+  (unless (<= +min-commissioning-timeout+ timeout +max-commissioning-timeout+)
+    (error "a commissioning window stays open ~d..~d seconds, not ~s" +min-commissioning-timeout+ +max-commissioning-timeout+ timeout))
+  (let* ((payload (make-onboarding-payload :vendor-id vendor-id :product-id product-id
+                                           :discriminator discriminator :passcode passcode))
+         (verifier (spake2p-verifier passcode (%check-pbkdf-parameters salt iterations) iterations))
+         (definition (find-cluster-definition 'administrator-commissioning))
+         (interaction (start-invoke (commissioner-model commissioner) session
+                                    (command-path +endpoint-root+ (cluster-definition-id definition)
+                                                  (command-definition-id (find-command-definition definition 'open-commissioning-window)))
+                                    (command-fields 'administrator-commissioning 'open-commissioning-window
+                                                    (list :commissioning-timeout timeout :pake-passcode-verifier verifier
+                                                          :discriminator discriminator :iterations iterations :salt salt))
+                                    :timed timed
+                                    :on-complete (and on-complete
+                                                      (lambda (interaction) (funcall on-complete interaction payload))))))
+    (values interaction payload)))
+
+(defun request-commissioning-window (commissioner session &rest args &key (wait *interaction-timeout*) &allow-other-keys)
+  "START-COMMISSIONING-WINDOW-REQUEST and wait: the ONBOARDING-PAYLOAD for the
+next administrator, or the INTERACTION-ERROR the node answered with."
+  (multiple-value-bind (interaction payload)
+      (apply #'start-commissioning-window-request commissioner session :allow-other-keys t args)
+    (%check-command-response (first (interaction-wait interaction :timeout wait)) "OpenCommissioningWindow")
+    payload))

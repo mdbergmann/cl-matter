@@ -97,16 +97,25 @@ signing requests, the certification declaration in its CMS envelope
 section 6.2.3, verified against the Matter SDK's vectors
 (`test/sdk-attestation.lisp`, `test/attestation-test.lisp`);
 `src/matter/commissioning.lisp` defines General Commissioning,
-Operational Credentials, Network Commissioning (Ethernet) and Access
-Control, a `device` that serves them from a fabric table with the
-fail-safe and its reverts, and a `commissioner` that runs the flow of
-section 5.5 over PASE: arm the fail-safe, regulatory configuration,
-attestation, CSR, root and NOC, CASE as the new administrator,
-CommissioningComplete. Attributes can be fabric-scoped (`define-cluster`'s
-`:fabric-scoped` and `:fabric-sensitive`): the NOCs, Fabrics and ACL
-lists show each fabric its own entries. `test/commissioning-test.lisp`
+Operational Credentials, Network Commissioning (Ethernet), Access
+Control and Administrator Commissioning, a `device` that serves them from
+a fabric table with the fail-safe and its reverts, and a `commissioner`
+that runs the flow of section 5.5 over PASE: arm the fail-safe,
+regulatory configuration, attestation, CSR, root and NOC, CASE as the new
+administrator, CommissioningComplete. Attributes can be fabric-scoped
+(`define-cluster`'s `:fabric-scoped` and `:fabric-sensitive`): the NOCs,
+Fabrics and ACL lists show each fabric its own entries. The commissioning
+window is the device's (section 5.4.2.3): the basic one with the device's
+own passcode, or an enhanced one an administrator opens for the next
+administrator over the Administrator Commissioning cluster (section
+11.19) with a verifier and discriminator of its choosing, timed, revocable,
+reflected in WindowStatus / AdminFabricIndex / AdminVendorId and in the
+advertisement's commissioning mode; `request-commissioning-window` is the
+commissioner's side and hands back the onboarding payload the next
+administrator types in. `test/commissioning-test.lisp`
 runs the flow on the in-memory rig and over UDP, drives every cluster
-command by hand, and lets fail-safes expire. The ACL is enforced
+command by hand, lets fail-safes and windows expire, and brings a second
+administrator in through a window the first one opened. The ACL is enforced
 (`src/matter/access.lisp`, section 6.6): every attribute names the
 privilege it takes to read and to write it and every command the one to
 invoke it (`define-cluster`'s `:read`, `:write` and `:access`, with the
@@ -201,6 +210,12 @@ reads, writes, invokes and subscriptions.
 ;; => (:node-id 2 :fabric #<FABRIC> :session #<SESSION CASE ...> :attestation (...) ...)
 ;; START-COMMISSIONING is the non-blocking form; :attestation :ignore skips the trust store
 ;; for development devices (the signature must still be the DAC's)
+;; multi-admin: the administrator opens a window for the next one (Administrator
+;; Commissioning, timed, Administer); the payload's codes go to the other commissioner
+(defvar *next* (cl-matter:request-commissioning-window *admin* (getf result :session) :timeout 300))
+(cl-matter:encode-manual-pairing-code *next*)          ; => "02757-612-6473" style, 11 digits
+;; the device's side: (open-commissioning-window *device* :timeout 300) re-opens the basic
+;; window; :mode :enhanced with :verifier/:salt/:iterations/:discriminator is what the cluster does
 ```
 
 ```lisp
@@ -281,11 +296,8 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   group sessions), the ACL's Extension attribute is not served, and
   Matter 1.4's Access Restriction List is not implemented.
 - **Commissioning**: the fabric table lives in memory (the application
-  keeps and restores `device-fabrics`); there is no Administrator
-  Commissioning cluster (a window opened by an existing admin, with the
-  enhanced commissioning mode in the advertisement), and the Network
-  Commissioning cluster is Ethernet only (no Wi-Fi or Thread
-  configuration).
+  keeps and restores `device-fabrics`), and the Network Commissioning
+  cluster is Ethernet only (no Wi-Fi or Thread configuration).
 - **Discovery**: the advertisements are made and read, but the device does
   not keep advertising with `CM=0` after commissioning (extended
   discovery), the rotating device identifier is passed in rather than
@@ -315,4 +327,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. Next: Administrator Commissioning, fabric persistence.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. Next: fabric persistence.

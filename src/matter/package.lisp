@@ -662,7 +662,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:secure-channel-on-session
    #:secure-channel-on-session-closed
    #:secure-channel-sessions
-   #:set-pase-verifier
+   #:set-pase-verifier #:secure-channel-pase-verifier #:secure-channel-pase-salt #:secure-channel-pase-iterations
    #:find-resumption
    #:start-pase
    #:start-case
@@ -800,7 +800,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:session-fabric-index
    ;; commissioning (commissioning.lisp)
    #:+cluster-general-commissioning+ #:+cluster-network-commissioning+
-   #:+cluster-operational-credentials+
+   #:+cluster-operational-credentials+ #:+cluster-administrator-commissioning+
    #:+commissioning-ok+ #:+commissioning-value-outside-range+ #:+commissioning-invalid-authentication+
    #:+commissioning-no-fail-safe+ #:+commissioning-busy-with-other-admin+
    #:+regulatory-indoor+ #:+regulatory-outdoor+ #:+regulatory-indoor-outdoor+
@@ -808,6 +808,9 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:+noc-status-missing-csr+ #:+noc-status-table-full+ #:+noc-status-invalid-admin-subject+
    #:+noc-status-fabric-conflict+ #:+noc-status-label-conflict+ #:+noc-status-invalid-fabric-index+
    #:+network-commissioning-feature-ethernet+
+   #:+administrator-commissioning-feature-basic+ #:+window-not-open+ #:+enhanced-window-open+ #:+basic-window-open+
+   #:+administrator-commissioning-busy+ #:+administrator-commissioning-pake-parameter-error+
+   #:+administrator-commissioning-window-not-open+ #:+min-commissioning-timeout+ #:+max-commissioning-timeout+
    #:+max-fabric-index+ #:+max-cumulative-fail-safe-seconds+ #:*fabric-removal-delay*
    #:*subjects-per-acl-entry* #:*targets-per-acl-entry* #:*acl-entries-per-fabric*
    #:make-ethernet-network-commissioning-cluster #:acl-entry
@@ -817,7 +820,9 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:device #:device-p #:make-device #:device-node #:device-channel #:device-model #:device-manager
    #:device-credentials #:device-vendor-id #:device-product-id #:device-fabrics #:device-max-fabrics
    #:device-fail-safe #:device-general-commissioning #:device-operational-credentials
-   #:device-network-commissioning #:device-access-control #:device-on-commissioned #:device-on-fabric-removed
+   #:device-network-commissioning #:device-access-control #:device-administrator-commissioning
+   #:device-window-mode #:device-window-expiry #:device-window-discriminator #:device-window-fabric
+   #:device-on-commissioned #:device-on-fabric-removed
    #:device-now #:device-acl #:find-device-fabric #:remove-device-fabric
    #:open-commissioning-window #:close-commissioning-window #:commissioning-window-open-p
    #:commissioner #:commissioner-p #:make-commissioner #:commissioner-channel #:commissioner-model
@@ -850,4 +855,5 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:device-advertiser-instance #:device-advertiser-services
    #:device-services #:start-device-advertising #:stop-device-advertising #:device-advertised-services
    #:device-onboarding-payload
-   #:discover-commissionable-nodes #:discover-operational-node))
+   #:discover-commissionable-nodes #:discover-operational-node
+   #:start-commissioning-window-request #:request-commissioning-window))

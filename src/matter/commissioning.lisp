@@ -4,14 +4,23 @@
 ;;;; against them.
 ;;;;
 ;;;; A DEVICE wraps a node, its Secure Channel and its Interaction Model
-;;;; with the four clusters -- General Commissioning (the fail-safe and
+;;;; with five clusters -- General Commissioning (the fail-safe and
 ;;;; CommissioningComplete), Operational Credentials (attestation, the CSR,
 ;;;; AddTrustedRootCertificate / AddNOC / UpdateNOC / RemoveFabric and the
 ;;;; fabric table), Network Commissioning (an Ethernet interface, nothing
-;;;; to configure) and Access Control (the ACL, written by admins and
-;;;; applied by access.lisp to every request) -- and the fabric table
-;;;; behind them.  A fabric a commissioner adds becomes a
-;;;; FABRIC in the table and in the Secure Channel, so CASE works at once.
+;;;; to configure), Access Control (the ACL, written by admins and applied
+;;;; by access.lisp to every request) and Administrator Commissioning (an
+;;;; administrator opens the commissioning window for the next one, 11.19)
+;;;; -- and the fabric table behind them.  A fabric a commissioner adds
+;;;; becomes a FABRIC in the table and in the Secure Channel, so CASE works
+;;;; at once.
+;;;;
+;;;; The commissioning window (5.4.2.3) is the device's: open, it holds a
+;;;; PASE verifier in the Secure Channel and a mode -- :BASIC with the
+;;;; device's own passcode, under its own discriminator, or :ENHANCED with
+;;;; the verifier and discriminator an administrator chose -- and it closes
+;;;; by itself after its timeout, with CommissioningComplete, or when an
+;;;; administrator revokes it.
 ;;;;
 ;;;; A COMMISSIONER owns a fabric and the key pair that roots it, and
 ;;;; COMMISSION runs the flow of section 5.5 over a PASE session: arm the
@@ -24,8 +33,7 @@
 ;;;; The mDNS advertisements that go with the window and the fabric table
 ;;;; are discovery.lisp's; the device tells it through ON-ADVERTISING-CHANGE.
 ;;;;
-;;;; Not done: the Administrator Commissioning cluster (opening a window from another
-;;;; admin), UpdateNOC and RemoveFabric beyond the basics, persistence of
+;;;; Not done: UpdateNOC and RemoveFabric beyond the basics, persistence of
 ;;;; the fabric table.
 
 (in-package :cl-matter)
@@ -33,6 +41,7 @@
 (defconstant +cluster-general-commissioning+ #x0030)
 (defconstant +cluster-network-commissioning+ #x0031)
 (defconstant +cluster-operational-credentials+ #x003E)
+(defconstant +cluster-administrator-commissioning+ #x003C)
 
 ;; CommissioningErrorEnum
 (defconstant +commissioning-ok+ 0)
@@ -58,6 +67,18 @@
 (defconstant +network-commissioning-feature-ethernet+ #x04)
 (defconstant +max-fabric-index+ 254)
 (defconstant +max-cumulative-fail-safe-seconds+ 900)
+;; Administrator Commissioning (11.19)
+(defconstant +administrator-commissioning-feature-basic+ #x01 "The Basic feature: OpenBasicCommissioningWindow.")
+;; CommissioningWindowStatusEnum
+(defconstant +window-not-open+ 0)
+(defconstant +enhanced-window-open+ 1)
+(defconstant +basic-window-open+ 2)
+;; the cluster's status codes
+(defconstant +administrator-commissioning-busy+ 2)
+(defconstant +administrator-commissioning-pake-parameter-error+ 3)
+(defconstant +administrator-commissioning-window-not-open+ 4)
+(defconstant +min-commissioning-timeout+ 180 "A window an administrator opens stays open at least 3 minutes (5.4.2.3) ...")
+(defconstant +max-commissioning-timeout+ 900 "... and at most 15.")
 
 (defparameter *fabric-removal-delay* 1.0d0
   "Seconds RemoveFabric waits before closing the fabric's sessions, so the
@@ -209,7 +230,23 @@ CAT subjects (or :NULL), TARGETS a list of (:cluster :endpoint
   (list :privilege privilege :auth-mode auth-mode :subjects subjects :targets targets :fabric-index fabric-index))
 
 ;;; ------------------------------------------------------------------
-;;; The device: fabric table, fail-safe and the cluster handlers
+;;; Administrator Commissioning (11.19): the window for the next administrator
+
+(define-cluster administrator-commissioning (+cluster-administrator-commissioning+ :revision 1)
+  (:attributes
+   (window-status 0 :enum8 :default 0)
+   (admin-fabric-index 1 (:nullable :fabric-idx) :default :null)
+   (admin-vendor-id 2 (:nullable :vendor-id) :default :null))
+  (:commands
+   ;; the verifier and salt are unbounded here: a wrong length is the cluster's PAKEParameterError, not CONSTRAINT_ERROR
+   (open-commissioning-window 0 :fields ((0 :commissioning-timeout :uint16) (1 :pake-passcode-verifier :octets)
+                                         (2 :discriminator :uint16) (3 :iterations :uint32) (4 :salt :octets))
+                              :timed t :access :administer)
+   (open-basic-commissioning-window 1 :fields ((0 :commissioning-timeout :uint16)) :timed t :access :administer)
+   (revoke-commissioning 2 :timed t :access :administer)))
+
+;;; ------------------------------------------------------------------
+;;; The device: fabric table, fail-safe, the window and the cluster handlers
 
 (define-condition commissioning-error (error)
   ((step :initarg :step :initform nil :reader commissioning-error-step)
@@ -244,7 +281,13 @@ into (FABRICs with their indices)."
   (max-fabrics 5)
   (next-fabric-index 1)
   fail-safe
-  general-commissioning operational-credentials network-commissioning access-control
+  general-commissioning operational-credentials network-commissioning access-control administrator-commissioning
+  ;; the commissioning window
+  (window-mode nil)                     ; NIL (closed), :basic or :enhanced
+  window-expiry                         ; manager time it closes by itself, or NIL
+  window-discriminator                  ; the one the commissionable advertisement carries
+  window-fabric                         ; the fabric of the administrator who opened it, or NIL
+  basic-verifier basic-salt basic-iterations ; the device's own PASE parameters: what the basic window accepts
   on-commissioned
   on-fabric-removed
   on-advertising-change                 ; called with the device when what it should advertise changed
@@ -254,8 +297,9 @@ into (FABRICs with their indices)."
 
 (defmethod print-object ((d device) stream)
   (print-unreadable-object (d stream :type t)
-    (format stream "vendor ~4,'0x product ~4,'0x, ~d fabric~:p~@[, fail-safe armed~]"
-            (device-vendor-id d) (device-product-id d) (length (device-fabrics d)) (device-fail-safe d))))
+    (format stream "vendor ~4,'0x product ~4,'0x, ~d fabric~:p~@[, ~(~a~) window open~]~@[, fail-safe armed~]"
+            (device-vendor-id d) (device-product-id d) (length (device-fabrics d))
+            (device-window-mode d) (device-fail-safe d))))
 
 (defun device-now (device) (exchange-manager-now (device-manager device)))
 
@@ -293,7 +337,7 @@ advertises the device (START-DEVICE-ADVERTISING) is told."
     (logand (logior (ash (aref octets 0) 8) (aref octets 1)) #xFFF)))
 
 (defun make-device (&key node channel model credentials vendor-id product-id (max-fabrics 5) fabrics
-                      passcode salt iterations verifier (discriminator (random-discriminator))
+                      passcode salt iterations verifier window-timeout (discriminator (random-discriminator))
                       (location-capability +regulatory-indoor-outdoor+) (regulatory-config location-capability)
                       (fail-safe-expiry 60) (ethernet-interface "eth0")
                       on-commissioned on-fabric-removed)
@@ -303,11 +347,14 @@ MODEL (its Interaction Model serving NODE, made here when NIL), with the
 attestation CREDENTIALS (TEST-ATTESTATION-CREDENTIALS for development).
 VENDOR-ID and PRODUCT-ID default to Basic Information's.  FABRICS are
 fabrics it already belongs to (restored by the application).  PASSCODE
-(or VERIFIER) with SALT and ITERATIONS opens the commissioning window at
-once; DISCRIMINATOR (default: random) is the 12-bit one of the onboarding
-payload that the commissionable advertisement carries.  ON-COMMISSIONED is called with the device and the new fabric after
-CommissioningComplete, ON-FABRIC-REMOVED with the device and a fabric
-that was removed."
+(or VERIFIER) with SALT and ITERATIONS are the device's own PASE
+parameters: they open the basic commissioning window at once, for
+WINDOW-TIMEOUT seconds (default: until it is closed), and an administrator
+can open it again with OpenBasicCommissioningWindow; DISCRIMINATOR
+(default: random) is the 12-bit one of the onboarding payload that the
+commissionable advertisement carries.  ON-COMMISSIONED is called with the
+device and the new fabric after CommissioningComplete, ON-FABRIC-REMOVED
+with the device and a fabric that was removed."
   (unless (node-p node) (error "MAKE-DEVICE needs a NODE"))
   (unless (secure-channel-p channel) (error "MAKE-DEVICE needs the node's SECURE-CHANNEL"))
   (let* ((manager (secure-channel-manager channel))
@@ -336,7 +383,14 @@ that was removed."
           (device-network-commissioning device)
           (add-cluster root (make-ethernet-network-commissioning-cluster :interface ethernet-interface))
           (device-access-control device)
-          (add-cluster root (make-cluster 'access-control)))
+          (add-cluster root (make-cluster 'access-control))
+          (device-administrator-commissioning device)
+          (add-cluster root (make-cluster 'administrator-commissioning
+                                          :feature-map (if (or passcode verifier) +administrator-commissioning-feature-basic+ 0))))
+    (when (or passcode verifier)
+      (setf (device-basic-verifier device) (%check-window-verifier (or verifier (spake2p-verifier passcode salt iterations)))
+            (device-basic-salt device) (%check-pbkdf-parameters salt iterations)
+            (device-basic-iterations device) iterations))
     (%install-handlers device)
     (dolist (fabric fabrics) (%install-fabric device fabric))
     (setf (device-timer device) (add-timer manager (lambda (now) (%device-timer device now))))
@@ -345,25 +399,82 @@ that was removed."
             (lambda (channel session)
               (when previous (funcall previous channel session))
               (%device-session-closed device session))))
-    (when (or passcode verifier)
-      (open-commissioning-window device :passcode passcode :verifier verifier :salt salt :iterations iterations))
+    (when (device-basic-verifier device)
+      (open-commissioning-window device :timeout window-timeout))
     device))
 
-(defun open-commissioning-window (device &key passcode verifier salt iterations)
-  "Accept PASE from a commissioner with PASSCODE (or its VERIFIER), SALT
-and ITERATIONS."
-  (set-pase-verifier (device-channel device)
-                     (or verifier (spake2p-verifier passcode salt iterations)) salt iterations)
+;;; The commissioning window
+
+(defun %check-window-verifier (verifier)
+  "VERIFIER is the 97 octets w0 || L with L a point on the curve, or a PASE-ERROR."
+  (unless (and (%octets-p verifier) (= (length verifier) +spake2p-verifier-length+))
+    (%pase-fail "a PASE verifier is ~d octets (w0 || L), got ~a" +spake2p-verifier-length+
+                (if (%octets-p verifier) (format nil "~d octets" (length verifier)) verifier)))
+  (handler-case (p256-decode-point (subseq verifier +p256-scalar-length+) "the verifier's L")
+    (error (e) (%pase-fail "the verifier's L: ~a" e)))
+  verifier)
+
+(defun %window-attributes (device)
+  "The Administrator Commissioning attributes follow the window."
+  (let ((cluster (device-administrator-commissioning device))
+        (fabric (device-window-fabric device)))
+    (setf (attribute-value cluster 'window-status) (ecase (device-window-mode device)
+                                                     ((nil) +window-not-open+)
+                                                     (:basic +basic-window-open+)
+                                                     (:enhanced +enhanced-window-open+))
+          (attribute-value cluster 'admin-fabric-index) (if fabric (fabric-index fabric) :null)
+          (attribute-value cluster 'admin-vendor-id) (if fabric (fabric-vendor-id fabric) :null))))
+
+(defun open-commissioning-window (device &key passcode verifier salt iterations timeout (mode :basic) discriminator fabric)
+  "Open the commissioning window: accept PASE from a commissioner holding
+PASSCODE (or its VERIFIER) with SALT and ITERATIONS -- without them, the
+device's own, the ones MAKE-DEVICE was given -- for TIMEOUT seconds (NIL:
+until it is closed).  MODE :ENHANCED is the window an administrator opens
+for the next one (11.19): the advertisement carries DISCRIMINATOR
+(default: the device's) and the enhanced commissioning mode, and FABRIC,
+the administrator's, shows in AdminFabricIndex and AdminVendorId.  A
+window already open is replaced."
+  ;; everything is checked before anything changes: a refused call leaves the window as it was
+  (unless (member mode '(:basic :enhanced)) (error "the window mode is :BASIC or :ENHANCED, not ~s" mode))
+  (when (and timeout (not (and (realp timeout) (plusp timeout))))
+    (error "the window timeout is a number of seconds or NIL, not ~s" timeout))
+  (setf discriminator (if discriminator (%check-id discriminator 12 "the discriminator") (device-discriminator device)))
+  (cond ((or passcode verifier)
+         (setf salt (%check-pbkdf-parameters salt iterations)
+               verifier (%check-window-verifier (or verifier (spake2p-verifier passcode salt iterations)))))
+        ((device-basic-verifier device)
+         (setf verifier (device-basic-verifier device)
+               salt (device-basic-salt device)
+               iterations (device-basic-iterations device)))
+        (t (error "~a has no passcode of its own: the window needs one" device)))
+  (set-pase-verifier (device-channel device) verifier salt iterations)
+  (setf (device-window-mode device) mode
+        (device-window-expiry device) (and timeout (+ (device-now device) timeout))
+        (device-window-discriminator device) discriminator
+        (device-window-fabric device) fabric)
+  (%window-attributes device)
+  (when timeout (%wake device))
+  (%trace-device device "commissioning window open: ~(~a~), discriminator ~d~@[, ~a s~]~@[, opened by ~a~]"
+                 mode (device-window-discriminator device) timeout fabric)
   (%advertising-changed device)
   device)
 
 (defun close-commissioning-window (device)
-  (set-pase-verifier (device-channel device) nil nil nil)
-  (%advertising-changed device)
-  device)
+  "Close the commissioning window: no more PASE.  The Administrator
+Commissioning attributes and the advertisement follow."
+  (let ((was-open (device-window-mode device)))
+    (set-pase-verifier (device-channel device) nil nil nil)
+    (setf (device-window-mode device) nil
+          (device-window-expiry device) nil
+          (device-window-discriminator device) nil
+          (device-window-fabric device) nil)
+    (%window-attributes device)
+    (when was-open (%trace-device device "commissioning window closed"))
+    (%advertising-changed device)
+    device))
 
 (defun commissioning-window-open-p (device)
-  (and (secure-channel-pase-verifier (device-channel device)) t))
+  (and (device-window-mode device) t))
 
 ;;; The fabric table
 
@@ -413,6 +524,10 @@ and ITERATIONS."
   (setf (secure-channel-resumptions (device-channel device))
         (remove fabric (secure-channel-resumptions (device-channel device)) :key #'case-resumption-fabric))
   (setf (device-acl device) (remove (fabric-index fabric) (device-acl device) :key (lambda (e) (getf e :fabric-index))))
+  ;; 11.19.7.2: the window it opened stays, AdminFabricIndex and AdminVendorId go null
+  (when (eq fabric (device-window-fabric device))
+    (setf (device-window-fabric device) nil)
+    (%window-attributes device))
   (dolist (session (%fabric-sessions device fabric))
     (close-session (device-channel device) session))
   ;; a PASE session that AddNOC put on this fabric loses it
@@ -452,10 +567,14 @@ UNSUPPORTED_ACCESS."
     fail-safe))
 
 (defun %disarm-fail-safe (device &key revert)
-  "Disarm; with REVERT undo what was done under it (expiry, ArmFailSafe 0)."
+  "Disarm; with REVERT undo what was done under it (expiry, ArmFailSafe 0).
+The Breadcrumb goes back to 0 either way (11.10.6.1): a commissioner that
+finds it set takes the node for one whose last commissioning broke off
+after AddNOC and skips straight to CASE."
   (let ((fail-safe (device-fail-safe device)))
     (when fail-safe
-      (setf (device-fail-safe device) nil)
+      (setf (device-fail-safe device) nil
+            (attribute-value (device-general-commissioning device) 'breadcrumb) 0)
       (when revert
         (%trace-device device "fail-safe expired: reverting")
         (let ((added (fail-safe-added-fabric fail-safe))
@@ -478,13 +597,20 @@ UNSUPPORTED_ACCESS."
       (%disarm-fail-safe device :revert t))))
 
 (defun %device-timer (device now)
-  "Fail-safe expiry and scheduled fabric removals; the next time to look."
+  "Fail-safe expiry, the window's timeout and scheduled fabric removals;
+the next time to look."
   (let ((fail-safe (device-fail-safe device)) (next nil))
     (flet ((consider (time) (when (or (null next) (< time next)) (setf next time))))
       (when fail-safe
         (if (>= now (fail-safe-expiry fail-safe))
             (%disarm-fail-safe device :revert t)
             (consider (fail-safe-expiry fail-safe))))
+      (let ((expiry (device-window-expiry device)))
+        (when expiry
+          (if (>= now expiry)
+              (progn (%trace-device device "the commissioning window timed out")
+                     (close-commissioning-window device))
+              (consider expiry))))
       (dolist (entry (copy-list (device-scheduled device)))
         (if (>= now (car entry))
             (progn (setf (device-scheduled device) (remove entry (device-scheduled device)))
@@ -498,21 +624,26 @@ UNSUPPORTED_ACCESS."
 
 (defun %install-handlers (device)
   (let ((gc (device-general-commissioning device))
-        (oc (device-operational-credentials device)))
-    (flet ((handler (name function)
-             (setf (command-handler (if (find-command-definition (cluster-definition gc) name) gc oc) name)
+        (oc (device-operational-credentials device))
+        (ac (device-administrator-commissioning device)))
+    (flet ((handler (cluster name function)
+             (setf (command-handler cluster name)
                    (lambda (cluster fields) (funcall function device cluster fields)))))
-      (handler 'arm-fail-safe #'%arm-fail-safe)
-      (handler 'set-regulatory-config #'%set-regulatory-config)
-      (handler 'commissioning-complete #'%commissioning-complete)
-      (handler 'attestation-request #'%attestation-request)
-      (handler 'certificate-chain-request #'%certificate-chain-request)
-      (handler 'csr-request #'%csr-request)
-      (handler 'add-trusted-root-certificate #'%add-trusted-root-certificate)
-      (handler 'add-noc #'%add-noc)
-      (handler 'update-noc #'%update-noc)
-      (handler 'update-fabric-label #'%update-fabric-label)
-      (handler 'remove-fabric #'%remove-fabric))))
+      (handler gc 'arm-fail-safe #'%arm-fail-safe)
+      (handler gc 'set-regulatory-config #'%set-regulatory-config)
+      (handler gc 'commissioning-complete #'%commissioning-complete)
+      (handler oc 'attestation-request #'%attestation-request)
+      (handler oc 'certificate-chain-request #'%certificate-chain-request)
+      (handler oc 'csr-request #'%csr-request)
+      (handler oc 'add-trusted-root-certificate #'%add-trusted-root-certificate)
+      (handler oc 'add-noc #'%add-noc)
+      (handler oc 'update-noc #'%update-noc)
+      (handler oc 'update-fabric-label #'%update-fabric-label)
+      (handler oc 'remove-fabric #'%remove-fabric)
+      (handler ac 'open-commissioning-window #'%open-commissioning-window)
+      (when (device-basic-verifier device)   ; the Basic feature: without a passcode of its own, UNSUPPORTED_COMMAND
+        (handler ac 'open-basic-commissioning-window #'%open-basic-commissioning-window))
+      (handler ac 'revoke-commissioning #'%revoke-commissioning))))
 
 (defun %session ()
   (or *interaction-session* (%im-fail :unsupported-access "no session")))
@@ -763,6 +894,66 @@ UNSUPPORTED_ACCESS."
            (%schedule device *fabric-removal-delay*
                       (lambda () (when (member fabric (device-fabrics device)) (%uninstall-fabric device fabric))))
            (%noc-response +noc-status-ok+ :fabric-index index)))))
+
+;;; Administrator Commissioning
+
+(defun %administrator-commissioning-fail (code format &rest args)
+  "FAILURE with one of the cluster's status codes."
+  (error 'interaction-error :status +im-status-failure+ :cluster-status code :message (apply #'format nil format args)))
+
+(defun %check-commissioning-timeout (seconds)
+  (unless (<= +min-commissioning-timeout+ seconds +max-commissioning-timeout+)
+    (%im-fail :invalid-command "a commissioning window stays open ~d..~d seconds, not ~d"
+              +min-commissioning-timeout+ +max-commissioning-timeout+ seconds))
+  seconds)
+
+(defun %require-closed-window (device)
+  "Busy while a window is open or a fail-safe is armed: commissioning is going on."
+  (when (device-window-mode device)
+    (%administrator-commissioning-fail +administrator-commissioning-busy+ "a commissioning window is already open"))
+  (when (device-fail-safe device)
+    (%administrator-commissioning-fail +administrator-commissioning-busy+ "the fail-safe is armed: commissioning is going on")))
+
+(defun %open-commissioning-window (device cluster fields)
+  (declare (ignore cluster))
+  (let* ((session (%session))
+         (seconds (%check-commissioning-timeout (getf fields :commissioning-timeout)))
+         (verifier (getf fields :pake-passcode-verifier))
+         (discriminator (getf fields :discriminator))
+         (iterations (getf fields :iterations))
+         (salt (getf fields :salt)))
+    (unless (<= discriminator #xFFF)
+      (%im-fail :invalid-command "the discriminator is 12 bits, got ~d" discriminator))
+    ;; 11.19.8.1: anything wrong with the PAKE parameters is PAKEParameterError
+    (handler-case (progn (%check-pbkdf-parameters salt iterations)
+                         (%check-window-verifier verifier))
+      (pase-error (e)
+        (%administrator-commissioning-fail +administrator-commissioning-pake-parameter-error+ "~a" (pase-error-message e))))
+    (%require-closed-window device)
+    (open-commissioning-window device :verifier verifier :salt salt :iterations iterations :timeout seconds
+                                      :mode :enhanced :discriminator discriminator :fabric (session-fabric session))
+    nil))
+
+(defun %open-basic-commissioning-window (device cluster fields)
+  (declare (ignore cluster))
+  (let ((session (%session))
+        (seconds (%check-commissioning-timeout (getf fields :commissioning-timeout))))
+    (%require-closed-window device)
+    (open-commissioning-window device :timeout seconds :mode :basic :fabric (session-fabric session))
+    nil))
+
+(defun %revoke-commissioning (device cluster fields)
+  (declare (ignore cluster fields))
+  (let ((session (%session)))
+    (unless (device-window-mode device)
+      (%administrator-commissioning-fail +administrator-commissioning-window-not-open+ "no commissioning window is open"))
+    (close-commissioning-window device)
+    ;; 11.19.8.3: a PASE session in progress ends with the window (not the revoker's own)
+    (dolist (other (secure-channel-sessions (device-channel device)))
+      (when (and (eq :pase (session-type other)) (not (eq other session)) (session-active-p other))
+        (%trace-device device "revoked: closing ~a" other)
+        (%close-session-later device other)))
+    nil))
 
 ;;; ------------------------------------------------------------------
 ;;; The commissioner

@@ -314,6 +314,27 @@ the operational service from AddNOC on; nothing after the fabric is gone."
         ;; without an advertiser the window still opens and closes
         (finishes (close-commissioning-window device))))))
 
+(test device-services-follow-the-window
+  "What the device puts on the air: the basic window under its own
+discriminator with CM=1, an enhanced one under the administrator's with
+CM=2, nothing while closed."
+  (let* ((cr (make-commissioning-rig))
+         (device (cr-device cr)))
+    (flet ((commissionable ()
+             (let ((s (find "_matterc._udp" (device-services device :port 5540) :key #'dns-sd:service-type :test #'string=)))
+               (and s (parse-matter-txt (dns-sd:service-txt s))))))
+      (let ((txt (commissionable)))
+        (is (= (device-discriminator device) (getf txt :discriminator)))
+        (is (= 1 (getf txt :commissioning-mode))))
+      (open-commissioning-window device :passcode 12345678 :salt *salt* :iterations 1000 :mode :enhanced :discriminator #x777)
+      (let ((txt (commissionable)))
+        (is (= #x777 (getf txt :discriminator)))
+        (is (= 2 (getf txt :commissioning-mode))))
+      (is (member "_L1911" (dns-sd:service-subtypes (first (device-services device :port 5540))) :test #'string=))
+      (close-commissioning-window device)
+      (is (null (commissionable)))
+      (is (null (device-services device :port 5540))))))
+
 (test device-advertising-on-a-shared-responder
   "The device's services join a responder the application runs, and leave it again."
   (let* ((cr (make-commissioning-rig))

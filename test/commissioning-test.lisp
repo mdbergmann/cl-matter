@@ -1,6 +1,7 @@
 ;;;; commissioning-test.lisp -- the commissioning clusters, the device's
-;;;; fail-safe and fabric table, fabric-scoped attributes, and the
-;;;; commissioner's flow, on the in-memory rig and over UDP.
+;;;; fail-safe, fabric table and commissioning window, fabric-scoped
+;;;; attributes, and the commissioner's flow, on the in-memory rig and over
+;;;; UDP.
 
 (defpackage :cl-matter.commissioning.tests
   (:use :cl :fiveam :cl-matter)
@@ -68,17 +69,20 @@
         ((interaction-failed-p interaction) (error (interaction-condition interaction)))
         (t (interaction-result interaction))))
 
-(defun invoke-on (cr session cluster command &optional fields &key (endpoint 0))
-  "Invoke COMMAND of CLUSTER on the device's ENDPOINT from A; the
-response plist, or the status keyword when it was refused."
+(defun invoke-on (cr session cluster command &optional fields &key (endpoint 0) timed)
+  "Invoke COMMAND of CLUSTER on the device's ENDPOINT from A (as a timed
+interaction of TIMED seconds when given); the response plist, or the
+status keyword when it was refused, with the cluster status as the
+second value."
   (let* ((definition (find-cluster-definition cluster))
          (responses (finish cr (start-invoke (cr-ma cr) session
                                              (command-path endpoint (cluster-definition-id definition)
                                                            (command-definition-id (find-command-definition definition command)))
-                                             (command-fields cluster command fields)))))
+                                             (command-fields cluster command fields)
+                                             :timed timed))))
     (multiple-value-bind (value kind) (invoke-response-value (first responses))
       (if (eq kind :status)
-          (im-status-name (im-status-status value))
+          (values (im-status-name (im-status-status value)) (im-status-cluster-status value))
           value))))
 
 (defun read-on (cr session endpoint cluster attribute &key fabric-filtered)
@@ -128,6 +132,8 @@ response plist, or the status keyword when it was refused."
         (is (eq :case (session-type session)))
         (is (session-active-p session))
         (is (not (session-active-p (getf result :pase-session))))
+        ;; CommissioningComplete disarmed the fail-safe: the breadcrumb the flow wrote is gone
+        (is (= 0 (attribute-value (gc-cluster cr) 'breadcrumb)))
         ;; the device's fabric table
         (is (= 1 (length (device-fabrics device))))
         (let ((fabric (device-fabric cr)))
@@ -191,7 +197,7 @@ response plist, or the status keyword when it was refused."
         (is (equal '(#xABCD0001) (fabric-case-auth-tags fabric))))
       (is (string= "DE" (attribute-value (node-cluster (device-node (cr-device cr)) 0 'basic-information) 'location)))
       (is (= +regulatory-indoor+ (attribute-value (gc-cluster cr) 'regulatory-config)))
-      (is (= 2 (attribute-value (gc-cluster cr) 'breadcrumb)))
+      (is (= 0 (attribute-value (gc-cluster cr) 'breadcrumb)))   ; SetRegulatoryConfig wrote 2; CommissioningComplete reset it
       (let ((nocs (read-on cr (getf result :session) 0 +cluster-operational-credentials+ 0 :fabric-filtered t)))
         (is (not (eq :null (getf (first nocs) :icac)))))
       (is (= 2 (commissioner-next-node-id (cr-commissioner cr))))))) ; an explicit node id does not consume one
@@ -312,8 +318,10 @@ response plist, or the status keyword when it was refused."
                    :status-code)))
       ;; a refused AddNOC does not use up the fail-safe: the CSR can still be asked for
       (is (getf (invoke-on cr sa 'operational-credentials 'csr-request (list :csr-nonce (octets-from 0 32))) :nocsr-elements))
+      (is (= 8 (attribute-value (gc-cluster cr) 'breadcrumb)))
       (is (= 0 (getf (invoke-on cr sa 'general-commissioning 'arm-fail-safe (list :expiry-length-seconds 0 :breadcrumb 0)) :error-code)))
       (is (null (device-fail-safe device)))
+      (is (= 0 (attribute-value (gc-cluster cr) 'breadcrumb)))   ; 11.10.6.1: reset with the fail-safe
       (pass-time cr (+ *fabric-removal-delay* 0.5))
       (is (not (session-active-p sa)))   ; ArmFailSafe 0 expires the fail-safe: the PASE session with it
       )
@@ -721,6 +729,249 @@ response plist, or the status keyword when it was refused."
     (signals error (make-commissioner (make-secure-channel (rig-a rig)) (make-interaction-model (rig-b rig))))
     (signals error (make-commissioner (make-secure-channel (rig-a rig)) (make-interaction-model (rig-a rig))
                                       :fabric (make-test-fabric)))))
+
+;;; ------------------------------------------------------------------
+;;; Administrator Commissioning: the window for the next administrator
+
+(defun window-attributes (cr session)
+  "(window-status admin-fabric-index admin-vendor-id) as the peer of SESSION reads them."
+  (loop :for id :from 0 :to 2
+        :collect (read-on cr session 0 +cluster-administrator-commissioning+ id)))
+
+(defun ac-invoke (cr session command &optional fields)
+  "A timed invoke of the Administrator Commissioning COMMAND: (values status cluster-status)."
+  (invoke-on cr session 'administrator-commissioning command fields :timed 10))
+
+(defun second-commissioner (cr &key (fabric-id #x2E))
+  "Another administrator on A's channel and model, with a fabric of its own."
+  (make-commissioner (commissioner-channel (cr-commissioner cr)) (cr-ma cr) :fabric-id fabric-id :node-id 1 :vendor-id #xFFF2))
+
+(defun commission-as (cr commissioner passcode)
+  "Run COMMISSIONER's flow against the device with PASSCODE (salt and iterations from the device)."
+  (let ((c (start-commissioning commissioner "mem" (rig-b-port (cr-rig cr)) :passcode passcode)))
+    (rig-run cr (lambda () (not (commissioning-running-p c))))
+    (cond ((commissioning-running-p c) (error "commissioning stuck at ~a" (commissioning-step c)))
+          ((commissioning-failed-p c) (error (commissioning-condition c)))
+          (t (commissioning-result c)))))
+
+(test administrator-commissioning-definition
+  (let ((definition (find-cluster-definition 'administrator-commissioning)))
+    (is (= #x003C (cluster-definition-id definition)))
+    (dolist (command '(open-commissioning-window open-basic-commissioning-window revoke-commissioning))
+      (let ((c (find-command-definition definition command)))
+        (is (command-definition-timed c) "~a is timed" command)
+        (is (= +privilege-administer+ (command-definition-privilege c)) "~a takes Administer" command)))
+    (is (= 0 (command-definition-id (find-command-definition definition 'open-commissioning-window))))
+    (is (= 1 (command-definition-id (find-command-definition definition 'open-basic-commissioning-window))))
+    (is (= 2 (command-definition-id (find-command-definition definition 'revoke-commissioning))))))
+
+(test the-device-window
+  "The window from the device's side: the basic one MAKE-DEVICE opens, its
+timeout, an enhanced one, the attributes and the advertisement inputs."
+  (let* ((cr (make-commissioning-rig :device-args (list :window-timeout 300)))
+         (device (cr-device cr))
+         (ac (device-administrator-commissioning device)))
+    (is (eq :basic (device-window-mode device)))
+    (is (commissioning-window-open-p device))
+    (is (= (device-discriminator device) (device-window-discriminator device)))
+    (is (null (device-window-fabric device)))
+    (is (< 299 (- (device-window-expiry device) (now cr)) 300.1))
+    (is (= +administrator-commissioning-feature-basic+ (cluster-feature-map ac)))
+    (is (= +basic-window-open+ (attribute-value ac 'window-status)))
+    (is (eq :null (attribute-value ac 'admin-fabric-index)))
+    (is (eq :null (attribute-value ac 'admin-vendor-id)))
+    (is (search "basic window open" (princ-to-string device)))
+    ;; it times out by itself
+    (advance (rig-clock (cr-rig cr)) 301)
+    (pump (cr-rig cr))
+    (is (not (commissioning-window-open-p device)))
+    (is (null (device-window-expiry device)))
+    (is (= +window-not-open+ (attribute-value ac 'window-status)))
+    (is (null (secure-channel-pase-verifier (device-channel device))))
+    ;; opened again without parameters: the device's own
+    (open-commissioning-window device)
+    (is (eq :basic (device-window-mode device)))
+    (is (null (device-window-expiry device)))
+    (is (equalp (spake2p-verifier *passcode* *salt* 1000) (secure-channel-pase-verifier (device-channel device))))
+    ;; an enhanced one replaces it, under its own discriminator, for a fabric
+    (let ((fabric (make-test-fabric :fabric-id 5)))
+      (setf (fabric-index fabric) 3)
+      (open-commissioning-window device :passcode 55555555 :salt *salt* :iterations 2000 :mode :enhanced
+                                        :discriminator #xABC :fabric fabric :timeout 180)
+      (is (eq :enhanced (device-window-mode device)))
+      (is (= #xABC (device-window-discriminator device)))
+      (is (eq fabric (device-window-fabric device)))
+      (is (= 2000 (secure-channel-pase-iterations (device-channel device))))
+      (is (= +enhanced-window-open+ (attribute-value ac 'window-status)))
+      (is (= 3 (attribute-value ac 'admin-fabric-index)))
+      (is (= #xFFF1 (attribute-value ac 'admin-vendor-id)))
+      (is (search "enhanced window open" (princ-to-string device))))
+    (close-commissioning-window device)
+    (is (= +window-not-open+ (attribute-value ac 'window-status)))
+    (is (eq :null (attribute-value ac 'admin-fabric-index)))
+    ;; bad arguments
+    (signals error (open-commissioning-window device :mode :fancy))
+    (signals error (open-commissioning-window device :timeout -1))
+    (signals error (open-commissioning-window device :discriminator 4096))
+    (signals pase-error (open-commissioning-window device :verifier (octets-from 0 10) :salt *salt* :iterations 1000))
+    (signals pase-error (open-commissioning-window device :verifier (octets-from 0 97) :salt *salt* :iterations 1000)) ; L is not a point
+    (signals pase-error (open-commissioning-window device :passcode 20202021 :salt *salt* :iterations 10))
+    (is (not (commissioning-window-open-p device)))
+    ;; a device without a passcode of its own has no basic window
+    (let ((bare (make-device :node (light-node) :channel (make-secure-channel (rig-a (cr-rig cr))))))
+      (is (not (commissioning-window-open-p bare)))
+      (is (= 0 (cluster-feature-map (device-administrator-commissioning bare))))
+      (signals error (open-commissioning-window bare))
+      (open-commissioning-window bare :passcode 1234 :salt *salt* :iterations 1000)
+      (is (eq :basic (device-window-mode bare))))))
+
+(test administrator-commissioning-commands
+  "OpenCommissioningWindow, OpenBasicCommissioningWindow and RevokeCommissioning
+over the first administrator's CASE session, with every refusal."
+  (let* ((cr (make-commissioning-rig))
+         (device (cr-device cr))
+         (salt (octets-from 1 33))
+         (good (list :commissioning-timeout 180 :pake-passcode-verifier (spake2p-verifier 87654321 salt 1000)
+                     :discriminator #x123 :iterations 1000 :salt salt)))
+    (multiple-value-bind (result session) (commission-and-open cr)
+      (declare (ignore result))
+      ;; after commissioning: closed, nobody's
+      (is (equal (list +window-not-open+ :null :null) (window-attributes cr session)))
+      (is (not (commissioning-window-open-p device)))
+      ;; the commands are timed
+      (is (eq :needs-timed-interaction (invoke-on cr session 'administrator-commissioning 'revoke-commissioning)))
+      (is (eq :needs-timed-interaction (invoke-on cr session 'administrator-commissioning 'open-commissioning-window good)))
+      ;; nothing to revoke
+      (is (equal (list :failure +administrator-commissioning-window-not-open+)
+                 (multiple-value-list (ac-invoke cr session 'revoke-commissioning))))
+      ;; the timeout and the discriminator: INVALID_COMMAND
+      (flet ((with (&rest changes)
+               (let ((fields (copy-list good)))
+                 (loop :for (key value) :on changes :by #'cddr :do (setf (getf fields key) value))
+                 fields)))
+        (is (eq :invalid-command (ac-invoke cr session 'open-commissioning-window (with :commissioning-timeout 179))))
+        (is (eq :invalid-command (ac-invoke cr session 'open-commissioning-window (with :commissioning-timeout 901))))
+        (is (eq :invalid-command (ac-invoke cr session 'open-commissioning-window (with :discriminator 4096))))
+        (is (eq :invalid-command (ac-invoke cr session 'open-basic-commissioning-window (list :commissioning-timeout 0))))
+        ;; the PAKE parameters: the cluster's PAKEParameterError
+        (dolist (bad (list (with :iterations 999) (with :iterations 100001)
+                           (with :salt (octets-from 0 15)) (with :salt (octets-from 0 33))
+                           (with :pake-passcode-verifier (octets-from 0 96))
+                           (with :pake-passcode-verifier (octets-from 0 97))))   ; L off the curve
+          (is (equal (list :failure +administrator-commissioning-pake-parameter-error+)
+                     (multiple-value-list (ac-invoke cr session 'open-commissioning-window bad)))
+              "~s" bad))
+        (is (not (commissioning-window-open-p device)))
+        ;; an armed fail-safe: Busy
+        (is (= 0 (getf (invoke-on cr session 'general-commissioning 'arm-fail-safe (list :expiry-length-seconds 60 :breadcrumb 0))
+                       :error-code)))
+        (is (equal (list :failure +administrator-commissioning-busy+)
+                   (multiple-value-list (ac-invoke cr session 'open-commissioning-window good))))
+        (is (equal (list :failure +administrator-commissioning-busy+)
+                   (multiple-value-list (ac-invoke cr session 'open-basic-commissioning-window (list :commissioning-timeout 180)))))
+        (is (= 0 (getf (invoke-on cr session 'general-commissioning 'arm-fail-safe (list :expiry-length-seconds 0 :breadcrumb 0))
+                       :error-code)))
+        ;; open: the window is enhanced, the administrator's, under the given discriminator
+        (is (eq :success (ac-invoke cr session 'open-commissioning-window good)))
+        (is (eq :enhanced (device-window-mode device)))
+        (is (= #x123 (device-window-discriminator device)))
+        (is (eq (device-fabric cr) (device-window-fabric device)))
+        (is (< 179 (- (device-window-expiry device) (now cr)) 180.1))
+        (is (equal (list +enhanced-window-open+ 1 #xFFF1) (window-attributes cr session)))
+        (is (equalp (getf good :pake-passcode-verifier) (secure-channel-pase-verifier (device-channel device))))
+        (is (equalp salt (secure-channel-pase-salt (device-channel device))))
+        ;; a second window: Busy, either kind
+        (is (equal (list :failure +administrator-commissioning-busy+)
+                   (multiple-value-list (ac-invoke cr session 'open-commissioning-window good))))
+        (is (equal (list :failure +administrator-commissioning-busy+)
+                   (multiple-value-list (ac-invoke cr session 'open-basic-commissioning-window (list :commissioning-timeout 180)))))
+        ;; a PASE session that is up when the window is revoked goes with it; the revoker's CASE session stays
+        (multiple-value-bind (sa sb) (pase-pair cr :local-a 71 :local-b 72)
+          (is (eq :success (ac-invoke cr session 'revoke-commissioning)))
+          (is (not (commissioning-window-open-p device)))
+          (is (equal (list +window-not-open+ :null :null) (window-attributes cr session)))
+          (is (session-active-p sb))
+          (pass-time cr (+ *fabric-removal-delay* 0.5))
+          (is (not (session-active-p sb)))
+          (is (not (session-active-p sa)))
+          (is (session-active-p session)))
+        ;; the basic window again, for 180 s, then it times out
+        (is (eq :success (ac-invoke cr session 'open-basic-commissioning-window (list :commissioning-timeout 180))))
+        (is (eq :basic (device-window-mode device)))
+        (is (= (device-discriminator device) (device-window-discriminator device)))
+        (is (equal (list +basic-window-open+ 1 #xFFF1) (window-attributes cr session)))
+        (is (equalp (spake2p-verifier *passcode* *salt* 1000) (secure-channel-pase-verifier (device-channel device))))
+        (advance (rig-clock (cr-rig cr)) 181)
+        (pump (cr-rig cr))
+        (is (not (commissioning-window-open-p device)))
+        (is (equal (list +window-not-open+ :null :null) (window-attributes cr session)))
+        ;; an Operate peer may read the attributes and not open a window
+        (write-on cr session 0 +cluster-access-control+ 0 (list (acl-entry +privilege-operate+ +auth-mode-case+ '(1))))
+        (is (equal (list +window-not-open+ :null :null) (window-attributes cr session)))
+        (is (eq :unsupported-access (ac-invoke cr session 'open-commissioning-window good)))
+        (is (eq :unsupported-access (ac-invoke cr session 'revoke-commissioning)))))))
+
+(test a-second-administrator-through-the-window
+  "The first administrator asks for a window; a second commissioner comes in
+through it with the passcode of the onboarding payload; the window closes
+with CommissioningComplete; the second administrator's fabric leaving the
+node nulls the window attributes of a window it opened."
+  (let* ((cr (make-commissioning-rig))
+         (device (cr-device cr))
+         (admin2 (second-commissioner cr)))
+    (multiple-value-bind (result session) (commission-and-open cr)
+      (declare (ignore result))
+      ;; the request from the commissioner's side
+      (signals error (start-commissioning-window-request (cr-commissioner cr) session :timeout 10))
+      (signals pase-error (start-commissioning-window-request (cr-commissioner cr) session :iterations 10))
+      (let ((seen '()))
+        (multiple-value-bind (interaction payload)
+            (start-commissioning-window-request (cr-commissioner cr) session :discriminator #x555 :timeout 240
+                                                                             :vendor-id #xFFF1 :product-id #x8000
+                                                                             :on-complete (lambda (i p) (push (list i p) seen)))
+          (finish cr interaction)
+          (is (= 1 (length seen)))
+          (is (eq interaction (first (first seen))))
+          (is (eq payload (second (first seen))))
+          (is (onboarding-payload-p payload))
+          (is (= #x555 (onboarding-payload-discriminator payload)))
+          (is (passcode-valid-p (onboarding-payload-passcode payload)))
+          (is (/= *passcode* (onboarding-payload-passcode payload)))
+          (is (= #xFFF1 (onboarding-payload-vendor-id payload)))
+          (is (= 11 (length (encode-manual-pairing-code payload))))   ; what the user types into the second commissioner
+          ;; the device: enhanced, 240 s, for fabric 1
+          (is (eq :enhanced (device-window-mode device)))
+          (is (= #x555 (device-window-discriminator device)))
+          (is (equal (list +enhanced-window-open+ 1 #xFFF1) (window-attributes cr session)))
+          (is (< 239 (- (device-window-expiry device) (now cr)) 240.1))
+          ;; the old passcode is no good now, the new one is
+          (signals error (commission-as cr admin2 *passcode*))
+          (is (eq :enhanced (device-window-mode device)))    ; a failed attempt leaves the window open
+          (let ((result2 (commission-as cr admin2 (onboarding-payload-passcode payload))))
+            (is (= 2 (getf result2 :fabric-index)))
+            (is (= 2 (length (device-fabrics device))))
+            (is (= 2 (length (cr-commissioned cr))))
+            ;; CommissioningComplete closed the window
+            (is (not (commissioning-window-open-p device)))
+            (is (equal (list +window-not-open+ :null :null) (window-attributes cr session)))
+            ;; both administrators work
+            (let ((session2 (getf result2 :session)))
+              (is (eq :success (invoke-on cr session2 'on-off 'toggle nil :endpoint 1)))
+              (is (eq :success (invoke-on cr session 'on-off 'toggle nil :endpoint 1)))
+              (is (= 2 (length (read-on cr session2 0 +cluster-operational-credentials+ 1))))
+              ;; the second opens a basic window; its fabric is removed: the window stays, the attributes go null
+              (is (eq :success (ac-invoke cr session2 'open-basic-commissioning-window (list :commissioning-timeout 180))))
+              (is (equal (list +basic-window-open+ 2 #xFFF2) (window-attributes cr session)))
+              (is (eq :success (ac-invoke cr session2 'revoke-commissioning)))
+              (is (eq :success (ac-invoke cr session2 'open-basic-commissioning-window (list :commissioning-timeout 180))))
+              (remove-device-fabric device 2)
+              (is (= 1 (length (device-fabrics device))))
+              (is (commissioning-window-open-p device))
+              (is (null (device-window-fabric device)))
+              (is (equal (list +basic-window-open+ :null :null) (window-attributes cr session)))
+              ;; the first administrator closes it
+              (is (eq :success (ac-invoke cr session 'revoke-commissioning)))
+              (is (not (commissioning-window-open-p device))))))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Over UDP, the device polling in its own thread
