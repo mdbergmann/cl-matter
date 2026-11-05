@@ -820,4 +820,27 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:commissioning-node-id #:commissioning-state #:commissioning-step #:commissioning-result
    #:commissioning-condition #:commissioning-pase-session #:commissioning-case-session
    #:commissioning-running-p #:commissioning-complete-p #:commissioning-failed-p
-   #:start-commissioning #:commissioning-wait #:commission))
+   #:start-commissioning #:commissioning-wait #:commission
+   #:device-discriminator #:device-on-advertising-change #:random-discriminator
+   ;; discovery (discovery.lisp)
+   #:*commissionable-service-type* #:*operational-service-type* #:*commissioner-service-type*
+   #:+commissioning-mode-none+ #:+commissioning-mode-basic+ #:+commissioning-mode-enhanced+
+   #:+discovery-soft-ap+ #:+discovery-ble+ #:+discovery-on-network+
+   #:+commissioning-flow-standard+ #:+commissioning-flow-user-intent+ #:+commissioning-flow-custom+
+   #:discovery-error #:discovery-error-message
+   #:random-instance-name #:random-host-name
+   #:commissionable-service #:operational-service #:commissioner-service #:parse-matter-txt
+   #:*forbidden-passcodes* #:passcode-valid-p #:random-passcode
+   #:onboarding-payload #:onboarding-payload-p #:make-onboarding-payload #:onboarding-payload-version
+   #:onboarding-payload-vendor-id #:onboarding-payload-product-id #:onboarding-payload-commissioning-flow
+   #:onboarding-payload-discovery-capabilities #:onboarding-payload-discriminator
+   #:onboarding-payload-short-discriminator-p #:onboarding-payload-short-discriminator
+   #:onboarding-payload-passcode #:onboarding-payload-tlv-data
+   #:verhoeff-check-digit #:verhoeff-valid-p
+   #:encode-manual-pairing-code #:decode-manual-pairing-code
+   #:base38-encode #:base38-decode #:encode-qr-code #:decode-qr-code
+   #:device-advertiser #:device-advertiser-p #:device-advertiser-device #:device-advertiser-responder
+   #:device-advertiser-instance #:device-advertiser-services
+   #:device-services #:start-device-advertising #:stop-device-advertising #:device-advertised-services
+   #:device-onboarding-payload
+   #:discover-commissionable-nodes #:discover-operational-node))

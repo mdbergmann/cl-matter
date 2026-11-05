@@ -6,7 +6,7 @@ Matter (the CSA smart-home standard) for Common Lisp, built bottom-up:
 |---|---|
 | `cl-matter/net` | Unconnected UDP sockets, multicast, interface list — one protocol, one backend per implementation (AmiLisp on `EXT`, SBCL on `sb-bsd-sockets`) |
 | `cl-matter/dns-sd` | mDNS (RFC 6762) and DNS-SD (RFC 6763): DNS message codec, resolver, service browser, responder |
-| `cl-matter` | Matter core: TLV codec, message framing, PASE/CASE sessions, interaction model, commissioning |
+| `cl-matter` | Matter core: TLV codec, message framing, PASE/CASE sessions, interaction model, commissioning, discovery |
 | `cl-matter/tests` | fiveam suite over all of the above |
 
 The discovery layer works on IPv4 and IPv6 and therefore on AmigaOS and
@@ -193,6 +193,31 @@ command by hand, and lets fail-safes expire.
 ```
 
 ```lisp
+;; the device on the air: _matterc._udp while the window is open (discriminator, VP, CM
+;; in subtypes and TXT), _matter._tcp per fabric from AddNOC on; follows the device by itself
+(cl-matter:start-device-advertising *device* :device-name "Lamp"
+                                             :device-type cl-matter:+device-type-on-off-light+)
+(cl-matter:device-advertised-services *device*)        ; the DNS-SD:SERVICEs on the air right now
+(cl-matter:stop-device-advertising *device*)
+;; what the user types into the commissioner
+(defvar *payload* (cl-matter:device-onboarding-payload *device* 20202021))
+(cl-matter:encode-qr-code *payload*)                   ; => "MT:-24J0AFN00KA0648G00"
+(cl-matter:encode-manual-pairing-code *payload*)       ; => "34970112332"
+;; ... and the commissioner's side of both
+(cl-matter:decode-manual-pairing-code "3497-011-2332") ; => #<ONBOARDING-PAYLOAD ... discriminator 3840 (short) ...>
+(cl-matter:discover-commissionable-nodes :short-discriminator 15)
+;; => ((:instance "8DEADBEEFCAFE001._matterc._udp.local" :host "..." :port 5540
+;;      :addresses ("fe80::1") :discriminator 3840 :vendor-id 65521 :product-id 32768
+;;      :commissioning-mode 1 :idle-interval 0.5d0 ...))
+(cl-matter:discover-operational-node fabric node-id)   ; the same plist for a commissioned node
+```
+
+`test/discovery-test.lisp` is the reference: the TXT keys and subtypes of
+section 4.3, the SDK's example QR and manual codes, and a device whose
+advertisement follows its window and fabric table over a loopback
+responder.
+
+```lisp
 (dns-sd:browse "_http._tcp")
 ;; => ("Printer._http._tcp.local" ...), <all records received>
 (dns-sd:resolve "Printer._http._tcp.local")
@@ -241,11 +266,14 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   Information, Identify and On/Off are defined.
 - **Commissioning**: the fabric table lives in memory (the application
   keeps and restores `device-fabrics`); there is no Administrator
-  Commissioning cluster (a window opened by an existing admin), the
-  Network Commissioning cluster is Ethernet only (no Wi-Fi or Thread
-  configuration), and the commissionable-node mDNS advertisement is
-  possible with the responder but the `_matterc._udp` TXT keys are not
-  generated.
+  Commissioning cluster (a window opened by an existing admin, with the
+  enhanced commissioning mode in the advertisement), and the Network
+  Commissioning cluster is Ethernet only (no Wi-Fi or Thread
+  configuration).
+- **Discovery**: the advertisements are made and read, but the device does
+  not keep advertising with `CM=0` after commissioning (extended
+  discovery), the rotating device identifier is passed in rather than
+  derived, and the responder answers on one interface's addresses.
 - **SBCL backend**: multicast membership and interface enumeration are
   still missing, so on SBCL the querier uses legacy unicast and the
   responder cannot run.
@@ -269,4 +297,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. Next: the commissionable-node advertisement and an interop test against chip-tool.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. Next: an interop test against chip-tool.

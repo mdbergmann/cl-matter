@@ -72,7 +72,8 @@
                  (:file "data-model")
                  (:file "clusters")
                  (:file "interaction")
-                 (:file "commissioning"))))
+                 (:file "commissioning")
+                 (:file "discovery"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -98,7 +99,8 @@
                  (:file "interaction-test")
                  (:file "sdk-attestation")
                  (:file "attestation-test")
-                 (:file "commissioning-test"))))
+                 (:file "commissioning-test")
+                 (:file "discovery-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

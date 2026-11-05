@@ -20,10 +20,13 @@
 ;;;; chain of completions, so it runs under a polled manager as well as a
 ;;;; blocking one.
 ;;;;
+;;;; The mDNS advertisements that go with the window and the fabric table
+;;;; are discovery.lisp's; the device tells it through ON-ADVERTISING-CHANGE.
+;;;;
 ;;;; Not done: access control enforcement (the ACL is kept, not applied),
-;;;; the commissionable-node mDNS advertisement, the Administrator
-;;;; Commissioning cluster (opening a window from another admin), UpdateNOC
-;;;; and RemoveFabric beyond the basics, persistence of the fabric table.
+;;;; the Administrator Commissioning cluster (opening a window from another
+;;;; admin), UpdateNOC and RemoveFabric beyond the basics, persistence of
+;;;; the fabric table.
 
 (in-package :cl-matter)
 
@@ -245,6 +248,7 @@ it, the attestation CREDENTIALS, and the FABRICS it has been commissioned
 into (FABRICs with their indices)."
   node channel model manager credentials
   (vendor-id 0) (product-id 0)
+  (discriminator 0)                     ; the 12-bit discriminator of the onboarding payload (5.1.1.5)
   (fabrics '())
   (max-fabrics 5)
   (next-fabric-index 1)
@@ -252,6 +256,8 @@ into (FABRICs with their indices)."
   general-commissioning operational-credentials network-commissioning access-control
   on-commissioned
   on-fabric-removed
+  on-advertising-change                 ; called with the device when what it should advertise changed
+  advertiser                            ; what START-DEVICE-ADVERTISING keeps (discovery.lisp)
   timer
   (scheduled '()))                      ; (time . function): work done once a response is out
 
@@ -284,8 +290,19 @@ command handler must not do before its response has left."
   "The fabric with INDEX in DEVICE's table, or NIL."
   (find index (device-fabrics device) :key #'fabric-index))
 
+(defun %advertising-changed (device)
+  "The commissioning window or the fabric table changed: whoever
+advertises the device (START-DEVICE-ADVERTISING) is told."
+  (when (device-on-advertising-change device)
+    (funcall (device-on-advertising-change device) device)))
+
+(defun random-discriminator ()
+  "A 12-bit discriminator (5.1.1.5)."
+  (let ((octets (random-octets 2)))
+    (logand (logior (ash (aref octets 0) 8) (aref octets 1)) #xFFF)))
+
 (defun make-device (&key node channel model credentials vendor-id product-id (max-fabrics 5) fabrics
-                      passcode salt iterations verifier
+                      passcode salt iterations verifier (discriminator (random-discriminator))
                       (location-capability +regulatory-indoor-outdoor+) (regulatory-config location-capability)
                       (fail-safe-expiry 60) (ethernet-interface "eth0")
                       on-commissioned on-fabric-removed)
@@ -296,7 +313,8 @@ attestation CREDENTIALS (TEST-ATTESTATION-CREDENTIALS for development).
 VENDOR-ID and PRODUCT-ID default to Basic Information's.  FABRICS are
 fabrics it already belongs to (restored by the application).  PASSCODE
 (or VERIFIER) with SALT and ITERATIONS opens the commissioning window at
-once.  ON-COMMISSIONED is called with the device and the new fabric after
+once; DISCRIMINATOR (default: random) is the 12-bit one of the onboarding
+payload that the commissionable advertisement carries.  ON-COMMISSIONED is called with the device and the new fabric after
 CommissioningComplete, ON-FABRIC-REMOVED with the device and a fabric
 that was removed."
   (unless (node-p node) (error "MAKE-DEVICE needs a NODE"))
@@ -308,6 +326,7 @@ that was removed."
          (device (%make-device :node node :channel channel :model model :manager manager :credentials credentials
                                :vendor-id (or vendor-id (attribute-value basic 'vendor-id))
                                :product-id (or product-id (attribute-value basic 'product-id))
+                               :discriminator (%check-id discriminator 12 "the discriminator")
                                :max-fabrics max-fabrics
                                :on-commissioned on-commissioned :on-fabric-removed on-fabric-removed)))
     (unless (eq (interaction-model-node model) node) (error "the Interaction Model does not serve this node"))
@@ -344,10 +363,12 @@ that was removed."
 and ITERATIONS."
   (set-pase-verifier (device-channel device)
                      (or verifier (spake2p-verifier passcode salt iterations)) salt iterations)
+  (%advertising-changed device)
   device)
 
 (defun close-commissioning-window (device)
   (set-pase-verifier (device-channel device) nil nil nil)
+  (%advertising-changed device)
   device)
 
 (defun commissioning-window-open-p (device)
@@ -388,6 +409,7 @@ and ITERATIONS."
   (setf (device-fabrics device) (append (device-fabrics device) (list fabric)))
   (pushnew fabric (secure-channel-fabrics (device-channel device)))
   (%refresh-credentials device)
+  (%advertising-changed device)
   fabric)
 
 (defun %fabric-sessions (device fabric)
@@ -408,6 +430,7 @@ and ITERATIONS."
       (setf (session-fabric session) nil)))
   (setf (fabric-index fabric) 0)
   (%refresh-credentials device)
+  (%advertising-changed device)
   (%trace-device device "fabric ~a removed" fabric)
   (when (and notify (device-on-fabric-removed device))
     (funcall (device-on-fabric-removed device) device fabric))

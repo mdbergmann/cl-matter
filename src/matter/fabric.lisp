@@ -116,9 +116,9 @@ CERTIFICATE-ERROR."
 (defun fabric-operational-instance-name (fabric &optional (node-id (fabric-node-id fabric)))
   "The DNS-SD instance name of NODE-ID on FABRIC: <compressed fabric id>-<node id>,
 16 uppercase hex digits each (section 4.3.2.1)."
-  (format nil "~16,'0x-~16,'0x" (nth-value 1 (compressed-fabric-id (fabric-root-public-key fabric)
-                                                                   (fabric-fabric-id fabric)))
-          node-id))
+  (string-upcase (format nil "~16,'0x-~16,'0x"
+                         (nth-value 1 (compressed-fabric-id (fabric-root-public-key fabric) (fabric-fabric-id fabric)))
+                         node-id)))
 
 (defun fabric-destination-id (fabric initiator-random &optional (node-id (fabric-node-id fabric)))
   "The Sigma1 destination id that addresses NODE-ID (default: this node) on FABRIC."

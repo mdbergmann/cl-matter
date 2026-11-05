@@ -877,3 +877,59 @@ responder refuses to start."
   (is (not (cl-matter.dns-sd::%link-local-p "fec0::1")))
   (is (not (cl-matter.dns-sd::%link-local-p "::1")))
   (is (not (cl-matter.dns-sd::%link-local-p "192.168.1.1"))))
+
+;;; ------------------------------------------------------------------
+;;; Changing the services while running
+
+(test responder-set-services-announces-and-withdraws
+  "A new service is announced (twice, a second apart), a removed one gets
+goodbyes; the host's records and the other service's stay."
+  (with-responder-rig (r peer legacy)
+    (receive-message peer)                                    ; the start announcement ...
+    (sleep 1.05)
+    (responder-poll r :timeout 0)
+    (receive-message peer)                                    ; ... and its repeat
+    (let* ((before (responder-records r))
+           (printer (make-service :instance "Printer" :type "_ipp._tcp" :port 631 :txt '("rp=/")))
+           (printer-name "Printer._ipp._tcp.local"))
+      ;; add one
+      (let ((after (responder-set-services r (list (lamp-service) printer))))
+        (is (eq after (responder-records r)))
+        (is (= (+ (length before) 5) (length after)))         ; enumeration PTR, type PTR, SRV, TXT, NSEC
+        (is (every (lambda (old) (find old after :test #'dns-sd::%same-record-p)) before))
+        (let ((announcement (receive-message peer)))
+          (is (dns-message-response-p announcement))
+          (is (= 5 (length (dns-message-answers announcement))))
+          (is (every (lambda (a) (or (string-equal printer-name (dns-record-name a))
+                                     (equal printer-name (dns-record-data a))
+                                     (equal "_ipp._tcp.local" (dns-record-data a))))
+                     (dns-message-answers announcement)))
+          (is (every (lambda (a) (plusp (dns-record-ttl a))) (dns-message-answers announcement)))
+          (is (equal '(:priority 0 :weight 0 :port 631 :target "box.local")
+                     (dns-record-data (first (records-like (dns-message-answers announcement) +type-srv+ printer-name))))))
+        (is (null (receive-message peer)))                    ; the repeat is not due yet
+        (sleep 1.05)
+        (responder-poll r :timeout 0)
+        (let ((again (receive-message peer)))
+          (is (and again (= 5 (length (dns-message-answers again)))))))
+      ;; it answers for the new name
+      (send-query peer r (ptr-query "_ipp._tcp.local"))
+      (responder-poll r)
+      (let ((response (receive-message peer)))
+        (is (equal (list printer-name) (mapcar #'dns-record-data (records-like (dns-message-answers response) +type-ptr+)))))
+      ;; take the lamp away
+      (let ((after (responder-set-services r (list printer))))
+        (is (= 8 (length after)))                             ; 3 host + 5 printer (incl. its enumeration PTR)
+        (is (null (records-like after +type-ptr+ "_matterc._udp.local")))
+        (let ((goodbye (receive-message peer)))
+          (is (= (- (length before) 3) (length (dns-message-answers goodbye))))
+          (is (every (lambda (a) (zerop (dns-record-ttl a))) (dns-message-answers goodbye)))
+          (is (notany (lambda (a) (string-equal "box.local" (dns-record-name a))) (dns-message-answers goodbye))))
+        (is (null (receive-message peer))))
+      ;; the lamp is no longer answered for
+      (send-query peer r (ptr-query "_matterc._udp.local"))
+      (responder-poll r)
+      (is (null (receive-message peer)))
+      ;; the same set again changes nothing on the wire
+      (responder-set-services r (list printer))
+      (is (null (receive-message peer))))))

@@ -76,6 +76,9 @@ list of \"key=value\" strings, SUBTYPES a list of subtype labels
                :documentation "The last error the responder thread swallowed.")
    (pending :initform nil :accessor %pending
             :documentation "Timed work: a list of (due-time . thunk).")
+   (lock :initform (bt:make-recursive-lock "mdns-responder") :reader %lock
+         :documentation "Held while records are read or changed: the
+responder thread answers under it, RESPONDER-SET-SERVICES changes under it.")
    (buffer :initform (make-array +max-datagram+ :element-type '(unsigned-byte 8))
            :reader %buffer))
   (:documentation "Advertises this host's services: answers queries for its
@@ -210,7 +213,9 @@ unicast format for a query from a port other than 5353 (section 6.7)."
                            (or host (mdns-socket-group mdns))
                            (or port (mdns-socket-port mdns)))))
 
-(defun %all-records-response (responder &key goodbye)
+(defun %records-response (records &key goodbye)
+  "An unsolicited response carrying RECORDS: an announcement, or with
+GOODBYE every record at TTL 0."
   (make-dns-message
    :flags (logior +flag-response+ +flag-authoritative+)
    :answers (mapcar (lambda (r)
@@ -218,7 +223,10 @@ unicast format for a query from a port other than 5353 (section 6.7)."
                           (make-dns-record :name (dns-record-name r) :type (dns-record-type r)
                                            :ttl 0 :data (dns-record-data r))
                           (%outgoing r)))
-                    (responder-records responder))))
+                    records)))
+
+(defun %all-records-response (responder &key goodbye)
+  (%records-response (responder-records responder) :goodbye goodbye))
 
 (defun %announce (responder)
   "RFC 6762 section 8.3: the whole record set, twice, one second apart."
@@ -232,14 +240,16 @@ unicast format for a query from a port other than 5353 (section 6.7)."
     (%send responder (%all-records-response responder :goodbye t))))
 
 (defun %schedule (responder delay thunk)
-  (push (cons (+ (%now) delay) thunk) (%pending responder)))
+  (bt:with-recursive-lock-held ((%lock responder))
+    (push (cons (+ (%now) delay) thunk) (%pending responder))))
 
 (defun %run-pending (responder)
-  (let ((now (%now)))
-    (dolist (entry (%pending responder))
-      (when (>= now (car entry))
-        (setf (%pending responder) (remove entry (%pending responder)))
-        (funcall (cdr entry))))))
+  (bt:with-recursive-lock-held ((%lock responder))
+    (let ((now (%now)))
+      (dolist (entry (%pending responder))
+        (when (>= now (car entry))
+          (setf (%pending responder) (remove entry (%pending responder)))
+          (funcall (cdr entry)))))))
 
 (defun %handle-query (responder message host port)
   (let* ((mdns (responder-socket responder))
@@ -265,14 +275,40 @@ calls this in a loop; a test rig without threads may too."
   (%run-pending responder)
   (let ((socket (mdns-socket-socket (responder-socket responder)))
         (buffer (%buffer responder)))
-    (setf (cl-matter.net:socket-timeout socket) timeout)
+    ;; a timeout of 0 would mean "none" to some backends: wait a millisecond
+    (setf (cl-matter.net:socket-timeout socket) (max timeout 0.001d0))
     (multiple-value-bind (length host port) (cl-matter.net:receive-from socket buffer)
       (when length
         (let ((message (handler-case (decode-message buffer :end length)
                          (dns-decode-error () nil))))
           (when (and message (not (dns-message-response-p message)))
-            (%handle-query responder message host port)))
+            (bt:with-recursive-lock-held ((%lock responder))
+              (%handle-query responder message host port))))
         t))))
+
+;;; ------------------------------------------------------------------
+;;; Changing the services while running
+
+(defun responder-set-services (responder services)
+  "Advertise SERVICES (MAKE-SERVICE structs) from now on: records no longer
+in the set are withdrawn with a goodbye, new ones are announced twice as
+on start (RFC 6762 sections 8.3 and 10.1; the new instance names are not
+probed -- give fresh instances names that cannot collide, as Matter's
+random ones do).  The host's records stay.  Safe to call from another
+thread than the responder's.  Returns the new record set."
+  (bt:with-recursive-lock-held ((%lock responder))
+    (let ((old (responder-records responder)))
+      (setf (responder-services responder) services)
+      (%build-records responder)
+      (let* ((new (responder-records responder))
+             (gone (remove-if (lambda (r) (find r new :test #'%same-record-p)) old))
+             (fresh (remove-if (lambda (r) (find r old :test #'%same-record-p)) new)))
+        (when gone
+          (%send responder (%records-response gone :goodbye t)))
+        (when fresh
+          (%send responder (%records-response fresh))
+          (%schedule responder 1 (lambda () (%send responder (%records-response fresh)))))
+        new))))
 
 ;;; ------------------------------------------------------------------
 ;;; Probing (RFC 6762 section 8.1)

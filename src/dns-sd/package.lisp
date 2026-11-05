@@ -59,6 +59,8 @@ and a responder that advertises this host's services.")
    #:mdns-socket-p
    #:mdns-socket-multicast-p
    #:mdns-socket-socket
+   #:mdns-socket-group
+   #:mdns-socket-port
    #:open-mdns-socket
    #:close-mdns-socket
    #:with-mdns-socket
@@ -93,4 +95,5 @@ and a responder that advertises this host's services.")
    #:responder-response
    #:responder-poll
    #:start-responder
-   #:stop-responder))
+   #:stop-responder
+   #:responder-set-services))
