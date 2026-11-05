@@ -466,6 +466,9 @@ of :DUPLICATE (seen before) and :STALE (older than the window)."
 to piggyback its acknowledgement on before sending a standalone one.")
 (defparameter *mrp-default-idle-interval* 0.5d0 "SESSION_IDLE_INTERVAL, seconds.")
 (defparameter *mrp-default-active-interval* 0.3d0 "SESSION_ACTIVE_INTERVAL, seconds.")
+(defparameter *mrp-default-active-threshold* 4.0d0
+  "SESSION_ACTIVE_THRESHOLD, seconds: how long after its last message a
+peer is assumed awake and polling fast.")
 
 (defun mrp-backoff (transmissions &key (interval *mrp-default-idle-interval*)
                                        (random (random 1.0d0)))

@@ -62,7 +62,10 @@
                  (:file "asn1")
                  (:file "certificate")
                  (:file "fabric")
-                 (:file "case"))))
+                 (:file "case")
+                 (:file "session")
+                 (:file "exchange")
+                 (:file "secure-channel"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -82,7 +85,8 @@
                  (:file "pase-test")
                  (:file "sdk-certificates")
                  (:file "certificate-test")
-                 (:file "case-test"))))
+                 (:file "case-test")
+                 (:file "exchange-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

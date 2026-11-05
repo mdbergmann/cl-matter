@@ -134,6 +134,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:*mrp-standalone-ack-timeout*
    #:*mrp-default-idle-interval*
    #:*mrp-default-active-interval*
+   #:*mrp-default-active-threshold*
    #:mrp-backoff
    #:pending-message
    #:pending-message-counter
@@ -144,6 +145,8 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:retransmission-table
    #:make-retransmission-table
    #:retransmission-table-pending
+   #:retransmission-table-idle-interval
+   #:retransmission-table-active-interval
    #:mrp-track
    #:mrp-acknowledge
    #:mrp-due
@@ -499,4 +502,141 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:case-complete-p
    #:case-resumption-state
    #:case-start
-   #:case-handle))
+   #:case-handle
+   ;; sessions (session.lisp)
+   #:session-error
+   #:session-error-message
+   #:+max-message-size+
+   #:session
+   #:session-p
+   #:session-type
+   #:session-role
+   #:session-local-session-id
+   #:session-peer-session-id
+   #:session-local-node-id
+   #:session-peer-node-id
+   #:session-fabric
+   #:session-peer-case-auth-tags
+   #:session-keys
+   #:session-encrypt-key
+   #:session-decrypt-key
+   #:session-peer-host
+   #:session-peer-port
+   #:session-message-counter
+   #:session-counter-window
+   #:session-local-session-parameters
+   #:session-peer-session-parameters
+   #:session-peer-parameters
+   #:session-retransmissions
+   #:session-last-received
+   #:session-resumption
+   #:session-state
+   #:session-secured-p
+   #:session-active-p
+   #:session-idle-interval
+   #:session-active-interval
+   #:session-active-threshold
+   #:session-peer-active-p
+   #:make-unsecured-session
+   #:make-secured-session
+   #:session-attestation-challenge
+   #:session-encode
+   #:session-decode
+   #:session-accept-counter
+   #:session-note-received
+   #:session-manager
+   #:session-manager-p
+   #:make-session-manager
+   #:session-manager-sessions
+   #:session-manager-unsecured
+   #:session-manager-unsecured-counter
+   #:session-manager-session-parameters
+   #:find-session
+   #:allocate-session-id
+   #:release-session-id
+   #:add-session
+   #:remove-session
+   #:random-ephemeral-node-id
+   #:open-unsecured-session
+   #:find-unsecured-session
+   ;; exchanges and MRP (exchange.lisp)
+   #:exchange-error
+   #:exchange-error-message
+   #:*unsecured-session-lifetime*
+   #:transport-send
+   #:transport-receive
+   #:transport-close
+   #:transport-local-endpoint
+   #:udp-transport
+   #:udp-transport-socket
+   #:make-udp-transport
+   #:exchange
+   #:exchange-p
+   #:exchange-manager
+   #:exchange-session
+   #:exchange-id
+   #:exchange-initiator-p
+   #:exchange-protocol-id
+   #:exchange-vendor-id
+   #:exchange-handler
+   #:exchange-state
+   #:exchange-pending-ack
+   #:exchange-outstanding
+   #:exchange-response-timeout
+   #:exchange-user-data
+   #:exchange-open-p
+   #:exchange-closed-p
+   #:exchange-manager-p
+   #:make-exchange-manager
+   #:exchange-manager-transport
+   #:exchange-manager-session-manager
+   #:exchange-manager-exchanges
+   #:exchange-manager-clock
+   #:exchange-manager-trace
+   #:exchange-manager-received
+   #:exchange-manager-sent
+   #:exchange-manager-now
+   #:exchange-manager-close
+   #:register-protocol-handler
+   #:find-protocol-handler
+   #:find-exchange
+   #:open-exchange
+   #:exchange-send
+   #:exchange-close
+   #:exchange-abort
+   #:exchange-manager-poll
+   #:exchange-manager-run
+   ;; Secure Channel over exchanges (secure-channel.lisp)
+   #:*handshake-timeout*
+   #:handshake
+   #:handshake-p
+   #:handshake-kind
+   #:handshake-role
+   #:handshake-machine
+   #:handshake-exchange
+   #:handshake-state
+   #:handshake-session
+   #:handshake-error
+   #:handshake-running-p
+   #:handshake-complete-p
+   #:handshake-failed-p
+   #:secure-channel
+   #:secure-channel-p
+   #:make-secure-channel
+   #:secure-channel-manager
+   #:secure-channel-session-manager
+   #:secure-channel-fabrics
+   #:secure-channel-resumptions
+   #:secure-channel-handshakes
+   #:secure-channel-on-session
+   #:secure-channel-on-session-closed
+   #:secure-channel-sessions
+   #:set-pase-verifier
+   #:find-resumption
+   #:start-pase
+   #:start-case
+   #:handshake-abort
+   #:handshake-wait
+   #:establish-pase-session
+   #:establish-case-session
+   #:close-session))

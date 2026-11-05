@@ -57,7 +57,21 @@ against the SDK's test certificates in `test/sdk-certificates.lisp`),
 fabrics with the compressed fabric id, the IPK and the CASE destination id
 (`src/matter/fabric.lisp`, the specification's vectors), and the Sigma
 handshake with session resumption (`src/matter/case.lisp`), driven like
-PASE by `case-handle` (`test/case-test.lisp`).
+PASE by `case-handle` (`test/case-test.lisp`). Both handshakes now run over
+UDP: the session layer (`src/matter/session.lisp`) frames, encrypts and
+counter-checks messages per peer and keeps the sessions of a node; the
+exchange manager (`src/matter/exchange.lisp`) pairs requests with responses
+on exchanges and runs the Message Reliability Protocol for all of them
+(piggybacked and standalone acknowledgements, retransmission on the
+specification's backoff, duplicate suppression, one reliable message in
+flight per exchange) from a single poll loop over a transport; and the
+Secure Channel driver (`src/matter/secure-channel.lisp`) carries PASE and
+CASE on it, installs the session each one yields, remembers CASE
+resumption state for the next time, answers BUSY while a PASE handshake is
+running, and does CloseSession. Application protocols plug in as handler
+functions per protocol id. `test/exchange-test.lisp` drives two nodes over
+an in-memory network with a stepped clock (lossy links, retransmission
+schedules, timeouts) and over real loopback UDP sockets.
 
 ```lisp
 ;; the commissionee stores a verifier, never the passcode
@@ -84,6 +98,24 @@ PASE by `case-handle` (`test/case-test.lisp`).
 ;; ... Sigma3, StatusReport; then on both sides
 (cl-matter:case-session-keys initiator)                ; => I2R, R2I, attestation challenge
 (cl-matter:case-resumption-state initiator)            ; keep it: the next session resumes
+```
+
+```lisp
+;; a node: a UDP transport, an exchange manager over it, the Secure Channel on that
+(defvar *m* (cl-matter:make-exchange-manager
+             :transport (cl-matter:make-udp-transport :family :ipv6 :port 5540)))
+(defvar *sc* (cl-matter:make-secure-channel *m* :fabrics (list fabric)
+                                                :pase-passcode 20202021 :pase-salt salt
+                                                :pase-iterations 1000))
+;; as a commissioner / controller: a handshake over the wire
+(cl-matter:establish-pase-session *sc* "fe80::1%en0" 5540 :passcode 20202021)
+(cl-matter:establish-case-session *sc* "fe80::1%en0" 5540 :fabric fabric :peer-node-id 2)
+;; => a SESSION; the next CASE to that node resumes
+;; an application protocol on a session
+(cl-matter:register-protocol-handler *m* 1 (lambda (exchange event &rest data) ...))
+(let ((ex (cl-matter:open-exchange *m* session 1 :handler #'my-handler)))
+  (cl-matter:exchange-send ex #x02 payload))        ; reliable; acked, retransmitted
+(cl-matter:exchange-manager-run *m* :until #'done-p) ; or EXCHANGE-MANAGER-POLL, one turn
 ```
 
 ```lisp
@@ -117,13 +149,11 @@ loopback.
 
 Nothing talks to a real Matter device yet. In the order it will be built:
 
-- **Exchanges, MRP and the session manager**: the layer that pairs
-  requests with responses, retransmits unacknowledged reliable messages,
-  tracks peer counters per session and carries PASE/CASE over a socket.
-  Today the message codec, the counters, the receive window and the MRP
-  timing exist as functions, but nothing drives them from the network;
-  the PASE and CASE handshakes run in loops of `pase-handle` /
-  `case-handle` calls, not over UDP.
+- **Running a node**: the exchange manager is single-threaded and
+  polled (`exchange-manager-poll` / `exchange-manager-run`); there is no
+  thread wrapper yet, no TCP transport, no message-counter
+  synchronisation for group messages, and sessions never expire on their
+  own.
 - **Certificates**: X.509 DER is only written, never read, so a
   certificate must arrive in Matter TLV form (as it does on the wire);
   there is no PEM/DER import, no CSR, and no device attestation
@@ -159,4 +189,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. Then exchanges and the session manager over the net backend.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. Then the interaction model: Read/Write/Invoke/Subscribe and the first clusters.
