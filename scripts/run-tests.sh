@@ -23,7 +23,7 @@ else
       --eval '(require "asdf")' \
       --eval '(load "~/quicklisp/setup.lisp")' \
       --eval "(load \"$AMILISP_REPO/lib/quicklisp-compat.lisp\")" \
-      --eval '(asdf:load-system :cl-matter/tests)' \
+      --eval '(handler-case (asdf:load-system :cl-matter/tests) (error (e) (format t "~%CL-MATTER-TESTS: LOAD FAILED: ~a~%" e) (quit 1)))' \
       --eval '(format t "~%CL-MATTER-TESTS: ~a~%" (if (fiveam:run! (quote cl-matter.tests:test-suite)) "PASSED" "FAILED"))' \
       --eval '(quit)' </dev/null 2>&1 | tee "$LOG"
   grep -q "CL-MATTER-TESTS: PASSED" "$LOG"

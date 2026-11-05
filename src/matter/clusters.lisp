@@ -58,8 +58,8 @@ composed devices yet)."
    (vendor-id 2 :vendor-id :default 0)
    (product-name 3 (:string 32) :default "")
    (product-id 4 :uint16 :default 0)
-   (node-label 5 (:string 32) :default "" :writable t)
-   (location 6 (:string 2) :default "XX" :writable t)
+   (node-label 5 (:string 32) :default "" :writable t :write :manage)
+   (location 6 (:string 2) :default "XX" :writable t :write :administer)
    (hardware-version 7 :uint16 :default 0)
    (hardware-version-string 8 (:string 64) :default "")
    (software-version 9 :uint32 :default 0)
@@ -69,7 +69,7 @@ composed devices yet)."
    (product-url 13 (:string 256) :optional t)
    (product-label 14 (:string 64) :optional t)
    (serial-number 15 (:string 32) :optional t)
-   (local-config-disabled 16 :bool :default nil :writable t :optional t)
+   (local-config-disabled 16 :bool :default nil :writable t :optional t :write :manage)
    (reachable 17 :bool :default t :optional t)
    (unique-id 18 (:string 32) :optional t)
    (capability-minima 19 (:struct (0 :case-sessions-per-fabric :uint16) (1 :subscriptions-per-fabric :uint16))
@@ -85,8 +85,8 @@ composed devices yet)."
    (identify-time 0 :uint16 :default 0 :writable t)
    (identify-type 1 :enum8 :default 0))
   (:commands
-   (identify 0 :fields ((0 :identify-time :uint16)))
-   (trigger-effect #x40 :fields ((0 :effect-identifier :enum8) (1 :effect-variant :enum8)))))
+   (identify 0 :fields ((0 :identify-time :uint16)) :access :manage)
+   (trigger-effect #x40 :fields ((0 :effect-identifier :enum8) (1 :effect-variant :enum8)) :access :manage)))
 
 (defun make-identify-cluster (&key (identify-type 0) on-identify)
   "An Identify cluster whose Identify command sets IdentifyTime and calls
@@ -109,7 +109,7 @@ ON-IDENTIFY with the cluster and the seconds asked for."
    (global-scene-control #x4000 :bool :default t :optional t)
    (on-time #x4001 :uint16 :default 0 :writable t :optional t)
    (off-wait-time #x4002 :uint16 :default 0 :writable t :optional t)
-   (start-up-on-off #x4003 (:nullable :enum8) :default :null :writable t :optional t))
+   (start-up-on-off #x4003 (:nullable :enum8) :default :null :writable t :optional t :write :manage))
   (:commands
    (off 0)
    (on 1)

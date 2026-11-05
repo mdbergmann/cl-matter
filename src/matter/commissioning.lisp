@@ -8,8 +8,9 @@
 ;;;; CommissioningComplete), Operational Credentials (attestation, the CSR,
 ;;;; AddTrustedRootCertificate / AddNOC / UpdateNOC / RemoveFabric and the
 ;;;; fabric table), Network Commissioning (an Ethernet interface, nothing
-;;;; to configure) and Access Control (the ACL, written by admins) -- and
-;;;; the fabric table behind them.  A fabric a commissioner adds becomes a
+;;;; to configure) and Access Control (the ACL, written by admins and
+;;;; applied by access.lisp to every request) -- and the fabric table
+;;;; behind them.  A fabric a commissioner adds becomes a
 ;;;; FABRIC in the table and in the Secure Channel, so CASE works at once.
 ;;;;
 ;;;; A COMMISSIONER owns a fabric and the key pair that roots it, and
@@ -23,14 +24,12 @@
 ;;;; The mDNS advertisements that go with the window and the fabric table
 ;;;; are discovery.lisp's; the device tells it through ON-ADVERTISING-CHANGE.
 ;;;;
-;;;; Not done: access control enforcement (the ACL is kept, not applied),
-;;;; the Administrator Commissioning cluster (opening a window from another
+;;;; Not done: the Administrator Commissioning cluster (opening a window from another
 ;;;; admin), UpdateNOC and RemoveFabric beyond the basics, persistence of
 ;;;; the fabric table.
 
 (in-package :cl-matter)
 
-(defconstant +cluster-access-control+ #x001F)
 (defconstant +cluster-general-commissioning+ #x0030)
 (defconstant +cluster-network-commissioning+ #x0031)
 (defconstant +cluster-operational-credentials+ #x003E)
@@ -56,19 +55,9 @@
 (defconstant +noc-status-fabric-conflict+ 9)
 (defconstant +noc-status-label-conflict+ 10)
 (defconstant +noc-status-invalid-fabric-index+ 11)
-;; AccessControlEntryPrivilegeEnum / AuthModeEnum
-(defconstant +privilege-view+ 1)
-(defconstant +privilege-proxy-view+ 2)
-(defconstant +privilege-operate+ 3)
-(defconstant +privilege-manage+ 4)
-(defconstant +privilege-administer+ 5)
-(defconstant +auth-mode-pase+ 1)
-(defconstant +auth-mode-case+ 2)
-(defconstant +auth-mode-group+ 3)
 (defconstant +network-commissioning-feature-ethernet+ #x04)
 (defconstant +max-fabric-index+ 254)
 (defconstant +max-cumulative-fail-safe-seconds+ 900)
-(defconstant +cat-subject-prefix+ #xFFFFFFFD "The high 32 bits of a CASE Authenticated Tag subject (6.6.2.1.2).")
 
 (defparameter *fabric-removal-delay* 1.0d0
   "Seconds RemoveFabric waits before closing the fabric's sessions, so the
@@ -79,7 +68,7 @@ response reaches the peer first.")
 
 (define-cluster general-commissioning (+cluster-general-commissioning+ :revision 1)
   (:attributes
-   (breadcrumb 0 :uint64 :default 0 :writable t)
+   (breadcrumb 0 :uint64 :default 0 :writable t :write :administer)
    (basic-commissioning-info 1 (:struct (0 :fail-safe-expiry-length-seconds :uint16)
                                         (1 :max-cumulative-failsafe-seconds :uint16))
                              :default '(:fail-safe-expiry-length-seconds 60 :max-cumulative-failsafe-seconds 900))
@@ -88,12 +77,12 @@ response reaches the peer first.")
    (supports-concurrent-connection 4 :bool :default t))
   (:commands
    (arm-fail-safe 0 :fields ((0 :expiry-length-seconds :uint16) (1 :breadcrumb :uint64))
-                  :response arm-fail-safe-response)
+                  :response arm-fail-safe-response :access :administer)
    (arm-fail-safe-response 1 :fields ((0 :error-code :enum8) (1 :debug-text (:string 128))) :generated t)
    (set-regulatory-config 2 :fields ((0 :new-regulatory-config :enum8) (1 :country-code (:string 2)) (2 :breadcrumb :uint64))
-                          :response set-regulatory-config-response)
+                          :response set-regulatory-config-response :access :administer)
    (set-regulatory-config-response 3 :fields ((0 :error-code :enum8) (1 :debug-text (:string 128))) :generated t)
-   (commissioning-complete 4 :response commissioning-complete-response)
+   (commissioning-complete 4 :response commissioning-complete-response :access :administer)
    (commissioning-complete-response 5 :fields ((0 :error-code :enum8) (1 :debug-text (:string 128))) :generated t)))
 
 ;;; ------------------------------------------------------------------
@@ -107,7 +96,7 @@ response reaches the peer first.")
   (:attributes
    (nocs 0 (:list (:struct (1 :noc (:octets 400) :optional) (2 :icac (:nullable (:octets 400)) :optional)
                            (254 :fabric-index :fabric-idx)))
-         :default '() :fabric-scoped t :fabric-sensitive (:noc :icac))
+         :default '() :fabric-scoped t :fabric-sensitive (:noc :icac) :read :administer)
    (fabrics 1 (:list (:struct (1 :root-public-key (:octets 65)) (2 :vendor-id :vendor-id) (3 :fabric-id :fabric-id)
                               (4 :node-id :node-id) (5 :label (:string 32)) (254 :fabric-index :fabric-idx)))
             :default '() :fabric-scoped t)
@@ -116,35 +105,37 @@ response reaches the peer first.")
    (trusted-root-certificates 4 (:list (:octets 400)) :default '())
    (current-fabric-index 5 :fabric-idx :computed #'%current-fabric-index))
   (:commands
-   (attestation-request 0 :fields ((0 :attestation-nonce (:octets 32))) :response attestation-response)
+   (attestation-request 0 :fields ((0 :attestation-nonce (:octets 32))) :response attestation-response :access :administer)
    (attestation-response 1 :fields ((0 :attestation-elements (:octets 900)) (1 :attestation-signature (:octets 64))) :generated t)
-   (certificate-chain-request 2 :fields ((0 :certificate-type :enum8)) :response certificate-chain-response)
+   (certificate-chain-request 2 :fields ((0 :certificate-type :enum8)) :response certificate-chain-response :access :administer)
    (certificate-chain-response 3 :fields ((0 :certificate (:octets 600))) :generated t)
-   (csr-request 4 :fields ((0 :csr-nonce (:octets 32)) (1 :is-for-update-noc :bool :optional)) :response csr-response)
+   (csr-request 4 :fields ((0 :csr-nonce (:octets 32)) (1 :is-for-update-noc :bool :optional)) :response csr-response
+                :access :administer)
    (csr-response 5 :fields ((0 :nocsr-elements (:octets 900)) (1 :attestation-signature (:octets 64))) :generated t)
    (add-noc 6 :fields ((0 :noc-value (:octets 400)) (1 :icac-value (:octets 400) :optional) (2 :ipk-value (:octets 16))
                        (3 :case-admin-subject :uint64) (4 :admin-vendor-id :vendor-id))
-            :response noc-response)
-   (update-noc 7 :fields ((0 :noc-value (:octets 400)) (1 :icac-value (:octets 400) :optional)) :response noc-response)
+            :response noc-response :access :administer)
+   (update-noc 7 :fields ((0 :noc-value (:octets 400)) (1 :icac-value (:octets 400) :optional)) :response noc-response
+               :access :administer)
    (noc-response 8 :fields ((0 :status-code :enum8) (1 :fabric-index :fabric-idx :optional) (2 :debug-text (:string 128) :optional))
                  :generated t)
-   (update-fabric-label 9 :fields ((0 :label (:string 32))) :response noc-response)
-   (remove-fabric 10 :fields ((0 :fabric-index :fabric-idx)) :response noc-response)
-   (add-trusted-root-certificate 11 :fields ((0 :root-ca-certificate (:octets 400))))))
+   (update-fabric-label 9 :fields ((0 :label (:string 32))) :response noc-response :access :administer)
+   (remove-fabric 10 :fields ((0 :fabric-index :fabric-idx)) :response noc-response :access :administer)
+   (add-trusted-root-certificate 11 :fields ((0 :root-ca-certificate (:octets 400))) :access :administer)))
 
 ;;; ------------------------------------------------------------------
 ;;; Network Commissioning (11.9), an Ethernet interface: attributes only
 
 (define-cluster network-commissioning (+cluster-network-commissioning+ :revision 1)
   (:attributes
-   (max-networks 0 :uint8 :default 1)
-   (networks 1 (:list (:struct (0 :network-id (:octets 32)) (1 :connected :bool))) :default '())
+   (max-networks 0 :uint8 :default 1 :read :administer)
+   (networks 1 (:list (:struct (0 :network-id (:octets 32)) (1 :connected :bool))) :default '() :read :administer)
    (scan-max-time-seconds 2 :uint8 :optional t)
    (connect-max-time-seconds 3 :uint8 :optional t)
-   (interface-enabled 4 :bool :default t :writable t)
-   (last-networking-status 5 (:nullable :enum8) :default :null)
-   (last-network-id 6 (:nullable (:octets 32)) :default :null)
-   (last-connect-error-value 7 (:nullable :int32) :default :null)))
+   (interface-enabled 4 :bool :default t :writable t :write :administer)
+   (last-networking-status 5 (:nullable :enum8) :default :null :read :administer)
+   (last-network-id 6 (:nullable (:octets 32)) :default :null :read :administer)
+   (last-connect-error-value 7 (:nullable :int32) :default :null :read :administer)))
 
 (defun make-ethernet-network-commissioning-cluster (&key (interface "eth0"))
   "A Network Commissioning cluster with the Ethernet feature: one connected
@@ -153,7 +144,7 @@ network named INTERFACE, nothing to scan or join."
                                        :networks (list (list :network-id (%ascii-octets interface) :connected t))))
 
 ;;; ------------------------------------------------------------------
-;;; Access Control (9.10): the ACL, kept and checked, not yet enforced
+;;; Access Control (9.10): the ACL that access.lisp applies
 
 (defparameter *subjects-per-acl-entry* 4)
 (defparameter *targets-per-acl-entry* 3)
@@ -203,9 +194,9 @@ the cluster allows per fabric."
                                                                  (1 :endpoint (:nullable :endpoint-no))
                                                                  (2 :device-type (:nullable :devtype-id)))))
                               :optional)
-                          (254 :fabric-index :fabric-idx)))
+                          (254 :fabric-index :fabric-idx :optional)))   ; a writer may leave it out: the session's is stamped
         :default '() :writable t :fabric-scoped t :fabric-sensitive (:privilege :auth-mode :subjects :targets)
-        :check #'%check-acl)
+        :check #'%check-acl :read :administer :write :administer)
    (subjects-per-access-control-entry 2 :uint16 :default 4)
    (targets-per-access-control-entry 3 :uint16 :default 3)
    (access-control-entries-per-fabric 4 :uint16 :default 4)))
@@ -657,13 +648,6 @@ UNSUPPORTED_ACCESS."
   (append (list :status-code status)
           (when fabric-index (list :fabric-index fabric-index))
           (when text (list :debug-text text))))
-
-(defun cat-subject-p (subject)
-  "True when SUBJECT (64 bits) names a CASE Authenticated Tag: #xFFFFFFFD in
-the high half, a tag with a non-zero version in the low."
-  (and (integerp subject)
-       (= +cat-subject-prefix+ (ash subject -32))
-       (case-auth-tag-p (logand subject #xFFFFFFFF))))
 
 (defun %add-noc (device cluster fields)
   (declare (ignore cluster))

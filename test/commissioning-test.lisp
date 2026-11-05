@@ -541,6 +541,54 @@ response plist, or the status keyword when it was refused."
           (is (= 3 (length (read-on cr session2 0 +cluster-access-control+ 0 :fabric-filtered t))))
           (is (= 5 (length (device-acl (cr-device cr))))))))))
 
+(test acl-enforced-after-commissioning
+  (let ((cr (make-commissioning-rig)))
+    (multiple-value-bind (result session) (commission-and-open cr)
+      (declare (ignore result))
+      (flet ((read-status (session endpoint cluster attribute)
+               (multiple-value-bind (value kind) (read-on cr session endpoint cluster attribute)
+                 (if (eq kind :status) (im-status-name (im-status-status value)) :data))))
+        ;; the administrator's entry from AddNOC lets the commissioner do everything
+        (is (eq :data (read-status session 0 +cluster-access-control+ 0)))
+        (is (eq :data (read-status session 0 +cluster-operational-credentials+ 0)))
+        (is (eq :success (invoke-on cr session 'on-off 'toggle nil :endpoint 1)))
+        (is (eq t (attribute-value (node-cluster (device-node (cr-device cr)) 1 +cluster-on-off+) 'on-off)))
+        ;; it demotes itself to Operate, with the entry as chip-tool writes it (no FabricIndex
+        ;; field: the server stamps the session's): the lamp still answers, the administration does not
+        (let ((statuses (finish cr (start-write (cr-ma cr) session
+                                                (list (make-attribute-data
+                                                       :path (attribute-path 0 +cluster-access-control+ 0)
+                                                       :data (tlv nil :array
+                                                                  (list (tlv nil :structure
+                                                                             (list (tlv 1 :unsigned +privilege-operate+)
+                                                                                   (tlv 2 :unsigned +auth-mode-case+)
+                                                                                   (tlv 3 :array (list (tlv nil :unsigned 1)))
+                                                                                   (tlv 4 :null)))))))))))
+          (is (eq :success (im-status-name (im-status-status (attribute-status-status (first statuses)))))))
+        (let ((acl (device-acl (cr-device cr))))
+          (is (= 1 (length acl)))
+          (is (= +privilege-operate+ (getf (first acl) :privilege)))
+          (is (equal '(1) (getf (first acl) :subjects)))
+          (is (= 1 (getf (first acl) :fabric-index))))
+        (is (eq :success (invoke-on cr session 'on-off 'toggle nil :endpoint 1)))
+        (is (eq :data (read-status session 0 +cluster-operational-credentials+ 1)))
+        (is (eq :unsupported-access (read-status session 0 +cluster-access-control+ 0)))
+        (is (eq :unsupported-access (read-status session 0 +cluster-operational-credentials+ 0)))
+        (is (eq :unsupported-access (invoke-on cr session 'general-commissioning 'arm-fail-safe
+                                               (list :expiry-length-seconds 60 :breadcrumb 0))))
+        (is (eq :unsupported-access (invoke-on cr session 'operational-credentials 'remove-fabric (list :fabric-index 1))))
+        (is (eq :unsupported-access (write-on cr session 0 +cluster-basic-information+ 5 "Hall")))
+        ;; and cannot get the privilege back
+        (is (eq :unsupported-access (write-on cr session 0 +cluster-access-control+ 0
+                                              (list (acl-entry +privilege-administer+ +auth-mode-case+ '(1))))))
+        (is (= 1 (length (device-fabrics (cr-device cr)))))
+        ;; a commissioner over PASE administers without an entry
+        (multiple-value-bind (sa sb) (pase-pair cr :local-a 91 :local-b 92)
+          (declare (ignore sb))
+          (is (eq :data (read-status sa 0 +cluster-access-control+ 0)))
+          (is (= 1 (length (read-on cr sa 0 +cluster-access-control+ 0))))
+          (is (= +privilege-operate+ (getf (first (device-acl (cr-device cr))) :privilege))))))))
+
 (test update-noc
   (let ((cr (make-commissioning-rig)))
     (multiple-value-bind (result session) (commission-and-open cr)

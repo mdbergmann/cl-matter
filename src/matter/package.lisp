@@ -745,9 +745,13 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:attribute-definition #:make-attribute-definition #:attribute-definition-p #:attribute-definition-name
    #:attribute-definition-id #:attribute-definition-type #:attribute-definition-writable
    #:attribute-definition-default #:attribute-definition-computed #:attribute-definition-optional
+   #:attribute-definition-fabric-scoped #:attribute-definition-fabric-sensitive #:attribute-definition-check
+   #:attribute-definition-read-privilege #:attribute-definition-write-privilege
+   #:+privilege-view+ #:+privilege-proxy-view+ #:+privilege-operate+ #:+privilege-manage+ #:+privilege-administer+
+   #:*privileges* #:privilege-value #:privilege-name #:privilege-grants-p
    #:command-definition #:make-command-definition #:command-definition-p #:command-definition-name
    #:command-definition-id #:command-definition-fields #:command-definition-response
-   #:command-definition-generated #:command-definition-timed
+   #:command-definition-generated #:command-definition-timed #:command-definition-privilege
    #:cluster-definition #:make-cluster-definition #:cluster-definition-p #:cluster-definition-name
    #:cluster-definition-id #:cluster-definition-revision #:cluster-definition-attributes
    #:cluster-definition-commands
@@ -770,6 +774,10 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:+device-type-on-off-plug-in-unit+ #:+device-type-on-off-light-switch+
    #:+data-model-revision+ #:+specification-version+
    #:make-identify-cluster #:make-on-off-cluster #:make-basic-node
+   ;; access control (access.lisp)
+   #:+cluster-access-control+ #:+auth-mode-pase+ #:+auth-mode-case+ #:+auth-mode-group+ #:+cat-subject-prefix+
+   #:cat-subject #:cat-subject-p #:session-subjects #:acl-entry-grants-p #:node-access-control-entries
+   #:access-granted-p
    ;; the Interaction Model over exchanges (interaction.lisp)
    #:*interaction-timeout* #:*max-report-payload* #:*max-subscription-interval* #:*subscription-grace*
    #:*timed-request-grace*
@@ -791,7 +799,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:attribute-report-value #:attribute-write #:command-fields #:invoke-response-value
    #:session-fabric-index
    ;; commissioning (commissioning.lisp)
-   #:+cluster-access-control+ #:+cluster-general-commissioning+ #:+cluster-network-commissioning+
+   #:+cluster-general-commissioning+ #:+cluster-network-commissioning+
    #:+cluster-operational-credentials+
    #:+commissioning-ok+ #:+commissioning-value-outside-range+ #:+commissioning-invalid-authentication+
    #:+commissioning-no-fail-safe+ #:+commissioning-busy-with-other-admin+
@@ -799,11 +807,10 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:+noc-status-ok+ #:+noc-status-invalid-public-key+ #:+noc-status-invalid-node-op-id+ #:+noc-status-invalid-noc+
    #:+noc-status-missing-csr+ #:+noc-status-table-full+ #:+noc-status-invalid-admin-subject+
    #:+noc-status-fabric-conflict+ #:+noc-status-label-conflict+ #:+noc-status-invalid-fabric-index+
-   #:+privilege-view+ #:+privilege-proxy-view+ #:+privilege-operate+ #:+privilege-manage+ #:+privilege-administer+
-   #:+auth-mode-pase+ #:+auth-mode-case+ #:+auth-mode-group+ #:+network-commissioning-feature-ethernet+
+   #:+network-commissioning-feature-ethernet+
    #:+max-fabric-index+ #:+max-cumulative-fail-safe-seconds+ #:*fabric-removal-delay*
    #:*subjects-per-acl-entry* #:*targets-per-acl-entry* #:*acl-entries-per-fabric*
-   #:make-ethernet-network-commissioning-cluster #:acl-entry #:cat-subject-p
+   #:make-ethernet-network-commissioning-cluster #:acl-entry
    #:commissioning-error #:commissioning-error-step #:commissioning-error-message
    #:fail-safe #:fail-safe-p #:fail-safe-session #:fail-safe-fabric #:fail-safe-expiry #:fail-safe-armed-at
    #:fail-safe-root #:fail-safe-keypair #:fail-safe-added-fabric

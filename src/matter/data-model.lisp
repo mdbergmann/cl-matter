@@ -24,8 +24,12 @@
 ;;;; Failures signal INTERACTION-ERROR with the Interaction Model status
 ;;;; the server answers with: CONSTRAINT_ERROR, INVALID_DATA_TYPE,
 ;;;; UNSUPPORTED_ATTRIBUTE, UNSUPPORTED_WRITE, UNSUPPORTED_COMMAND ...
-;;;; Access control is not implemented: whoever has a session may do what
-;;;; the definitions allow.
+;;;;
+;;;; Each attribute names the privilege a peer needs to read and to write
+;;;; it, each command the one it takes to invoke it (section 6.6.2.2; the
+;;;; defaults are the specification's: View to read, Operate to write and
+;;;; invoke).  Who holds which privilege is access.lisp's question; the
+;;;; functions here are the local API and ask nobody.
 
 (in-package :cl-matter)
 
@@ -73,6 +77,39 @@ and command handlers run for it; NIL for local access.")
         (if signed
             (values (- (ash 1 (1- bits))) (1- (ash 1 (1- bits))))
             (values 0 (1- (ash 1 bits))))))))
+
+;;; ------------------------------------------------------------------
+;;; Privileges (6.6.2.2)
+
+(defconstant +privilege-view+ 1)
+(defconstant +privilege-proxy-view+ 2)
+(defconstant +privilege-operate+ 3)
+(defconstant +privilege-manage+ 4)
+(defconstant +privilege-administer+ 5)
+
+(defparameter *privileges*
+  '((:view . 1) (:proxy-view . 2) (:operate . 3) (:manage . 4) (:administer . 5))
+  "AccessControlEntryPrivilegeEnum by name.")
+
+(defun privilege-value (designator)
+  "The AccessControlEntryPrivilegeEnum value of DESIGNATOR, a name
+(:VIEW :PROXY-VIEW :OPERATE :MANAGE :ADMINISTER) or a value 1..5."
+  (cond ((and (integerp designator) (<= +privilege-view+ designator +privilege-administer+)) designator)
+        ((and (keywordp designator) (cdr (assoc designator *privileges*))))
+        (t (error "~s is not a privilege" designator))))
+
+(defun privilege-name (value)
+  "The name of the privilege VALUE."
+  (or (car (rassoc value *privileges*)) (error "~s is not a privilege" value)))
+
+(defun privilege-grants-p (held wanted)
+  "Does the privilege HELD include WANTED?  Administer includes Manage and
+ProxyView, Manage includes Operate, Operate and ProxyView include View."
+  (let ((held (privilege-value held)) (wanted (privilege-value wanted)))
+    (or (= held wanted)
+        (= held +privilege-administer+)
+        (and (= held +privilege-manage+) (member wanted (list +privilege-operate+ +privilege-view+)) t)
+        (and (member held (list +privilege-operate+ +privilege-proxy-view+)) (= wanted +privilege-view+)))))
 
 (defun %constraint (format &rest args)
   (error 'interaction-error :status +im-status-constraint-error+ :message (apply #'format nil format args)))
@@ -180,15 +217,18 @@ instance only when given a value.  A FABRIC-SCOPED attribute is a list of
 plists each carrying :FABRIC-INDEX: a fabric reads and writes its own
 entries, and the FABRIC-SENSITIVE fields of other fabrics' entries are
 withheld.  CHECK, a function of (cluster new-value), validates a peer's
-write and signals INTERACTION-ERROR to refuse it."
+write and signals INTERACTION-ERROR to refuse it.  READ-PRIVILEGE and
+WRITE-PRIVILEGE are what a peer needs (+PRIVILEGE-...+ values)."
   name (id 0) (type :uint8) (writable nil) (default nil) (computed nil) (optional nil)
-  (fabric-scoped nil) (fabric-sensitive nil) (check nil))
+  (fabric-scoped nil) (fabric-sensitive nil) (check nil)
+  (read-privilege +privilege-view+) (write-privilege +privilege-operate+))
 
 (defstruct command-definition
   "One command of a cluster.  FIELDS is a (:struct ...) field list;
 RESPONSE names the generated command it is answered with; GENERATED
-commands are responses, never accepted; TIMED ones need a timed interaction."
-  name (id 0) (fields nil) (response nil) (generated nil) (timed nil))
+commands are responses, never accepted; TIMED ones need a timed
+interaction; PRIVILEGE is what a peer needs to invoke it."
+  name (id 0) (fields nil) (response nil) (generated nil) (timed nil) (privilege +privilege-operate+))
 
 (defstruct cluster-definition
   name (id 0) (revision 1) (attributes '()) (commands '()))
@@ -229,8 +269,12 @@ commands are responses, never accepted; TIMED ones need a timed interaction."
 (defmacro define-cluster (name (id &key (revision 1)) &body sections)
   "Define cluster NAME with ID.  SECTIONS:
   (:attributes (name id type &key writable default computed optional
-                              fabric-scoped fabric-sensitive check) ...)
-  (:commands (name id &key fields response generated timed) ...)"
+                              fabric-scoped fabric-sensitive check
+                              read write) ...)
+  (:commands (name id &key fields response generated timed access) ...)
+READ, WRITE and ACCESS name the privilege a peer needs (:VIEW :PROXY-VIEW
+:OPERATE :MANAGE :ADMINISTER); View to read, Operate to write and invoke
+when not given."
   (let ((attributes (cdr (assoc :attributes sections)))
         (commands (cdr (assoc :commands sections))))
     `(register-cluster-definition
@@ -245,14 +289,17 @@ commands are responses, never accepted; TIMED ones need a timed interaction."
                                             :optional ,(getf options :optional)
                                             :fabric-scoped ,(getf options :fabric-scoped)
                                             :fabric-sensitive ',(getf options :fabric-sensitive)
-                                            :check ,(getf options :check))))
+                                            :check ,(getf options :check)
+                                            :read-privilege (privilege-value ',(getf options :read :view))
+                                            :write-privilege (privilege-value ',(getf options :write :operate)))))
        :commands (list ,@(loop :for (cname cid . options) :in commands
                                :collect `(make-command-definition
                                           :name ',cname :id ,cid
                                           :fields ',(getf options :fields)
                                           :response ',(getf options :response)
                                           :generated ,(getf options :generated)
-                                          :timed ,(getf options :timed))))))))
+                                          :timed ,(getf options :timed)
+                                          :privilege (privilege-value ',(getf options :access :operate)))))))))
 
 ;;; Global attributes (7.13)
 

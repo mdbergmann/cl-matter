@@ -106,7 +106,18 @@ CommissioningComplete. Attributes can be fabric-scoped (`define-cluster`'s
 `:fabric-scoped` and `:fabric-sensitive`): the NOCs, Fabrics and ACL
 lists show each fabric its own entries. `test/commissioning-test.lisp`
 runs the flow on the in-memory rig and over UDP, drives every cluster
-command by hand, and lets fail-safes expire.
+command by hand, and lets fail-safes expire. The ACL is enforced
+(`src/matter/access.lisp`, section 6.6): every attribute names the
+privilege it takes to read and to write it and every command the one to
+invoke it (`define-cluster`'s `:read`, `:write` and `:access`, with the
+specification's View / Operate defaults and overrides on the clusters
+defined here), and a request on a CASE session is granted what the
+entries of its fabric give its node id or CASE Authenticated Tags on the
+cluster, endpoint or device type asked for; a PASE session is the
+commissioner and administers everything. A concrete path the peer may
+not touch is answered UNSUPPORTED_ACCESS, a wildcard leaves it out.
+`test/access-test.lisp` covers the matching and the enforcement of
+reads, writes, invokes and subscriptions.
 
 ```lisp
 ;; the commissionee stores a verifier, never the passcode
@@ -262,11 +273,13 @@ Nothing talks to a real Matter device yet. In the order it will be built:
 - **Message privacy** (the P flag, privacy keys): not implemented; group
   messages and group keys likewise.
 - **Interaction model**: events are accepted in requests and never
-  reported; the ACL is kept and checked but not enforced (any session may
-  do what the definitions allow); no list chunking (an attribute too big
-  for one message is reported RESOURCE_EXHAUSTED) and no group writes or
-  invokes. Beyond the commissioning clusters only Descriptor, Basic
-  Information, Identify and On/Off are defined.
+  reported; no list chunking (an attribute too big for one message is
+  reported RESOURCE_EXHAUSTED) and no group writes or invokes. Beyond
+  the commissioning clusters only Descriptor, Basic Information, Identify
+  and On/Off are defined.
+- **Access control**: the Group auth mode never matches (there are no
+  group sessions), the ACL's Extension attribute is not served, and
+  Matter 1.4's Access Restriction List is not implemented.
 - **Commissioning**: the fabric table lives in memory (the application
   keeps and restores `device-fabrics`); there is no Administrator
   Commissioning cluster (a window opened by an existing admin, with the
@@ -302,4 +315,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. Next: ACL enforcement, Administrator Commissioning, fabric persistence.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. Next: Administrator Commissioning, fabric persistence.

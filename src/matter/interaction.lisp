@@ -13,9 +13,14 @@
 ;;;; INTERACTION-WAIT or an ON-COMPLETE function, and answers the reports of
 ;;;; its subscriptions.
 ;;;;
+;;;; Every read, write and invoke is checked against the node's ACL
+;;;; (access.lisp): a concrete path the peer may not touch is answered
+;;;; UNSUPPORTED_ACCESS, a wildcard silently leaves out what it may not
+;;;; read (8.4.3.2).
+;;;;
 ;;;; Not done: events (event requests are accepted and never answered),
-;;;; access control, fabric-scoped data, list chunking (an attribute too
-;;;; big for one message is reported RESOURCE_EXHAUSTED), group writes.
+;;;; list chunking (an attribute too big for one message is reported
+;;;; RESOURCE_EXHAUSTED), group writes.
 
 (in-package :cl-matter)
 
@@ -113,16 +118,25 @@ subscription and a reason when it ends."
 ;;; ------------------------------------------------------------------
 ;;; Server: reading the data model
 
-(defun %path-report (node path &key (fabric-index 0) fabric-filtered)
-  "The ATTRIBUTE-REPORT of the concrete PATH: its data, or a status, as
-the fabric FABRIC-INDEX sees it."
+(defun %readable-p (node session endpoint cluster attribute-id)
+  "May the peer of SESSION read the attribute?"
+  (access-granted-p node session endpoint (cluster-id cluster)
+                    (attribute-definition-read-privilege (%attribute cluster attribute-id))))
+
+(defun %path-report (node path &key session fabric-filtered expanded)
+  "The ATTRIBUTE-REPORT of the concrete PATH for the peer of SESSION: its
+data, or a status.  An attribute the peer may not read is reported
+UNSUPPORTED_ACCESS, or when PATH came from a wildcard (EXPANDED) not at all: NIL."
   (flet ((status (status) (make-attribute-report
                            :status (make-attribute-status :path path :status (im-status status)))))
     (let* ((endpoint (find-endpoint node (attribute-path-endpoint path)))
-           (cluster (and endpoint (find-cluster endpoint (attribute-path-cluster path)))))
+           (cluster (and endpoint (find-cluster endpoint (attribute-path-cluster path))))
+           (fabric-index (session-fabric-index session)))
       (cond ((null endpoint) (status :unsupported-endpoint))
             ((null cluster) (status :unsupported-cluster))
             ((not (attribute-present-p cluster (attribute-path-attribute path))) (status :unsupported-attribute))
+            ((not (%readable-p node session endpoint cluster (attribute-path-attribute path)))
+             (if expanded nil (status :unsupported-access)))
             (t (handler-case
                    (make-attribute-report
                     :data (make-attribute-data :data-version (cluster-data-version cluster)
@@ -162,15 +176,16 @@ the fabric FABRIC-INDEX sees it."
                           (and cluster (= (data-version-filter-data-version filter) (cluster-data-version cluster)))))))
                filters))))
 
-(defun %collect-reports (node paths &key filters (fabric-index 0) fabric-filtered)
+(defun %collect-reports (node paths &key filters session fabric-filtered)
   "Reports for PATHS (wildcards expanded, concrete misses reported as
-statuses), as the fabric FABRIC-INDEX sees them."
+statuses) for the peer of SESSION."
   (let ((reports '()))
     (dolist (path paths)
       (if (attribute-path-concrete-p path)
-          (push (%path-report node path :fabric-index fabric-index :fabric-filtered fabric-filtered) reports)
+          (push (%path-report node path :session session :fabric-filtered fabric-filtered) reports)
           (dolist (concrete (%expand-path node path))
-            (push (%path-report node concrete :fabric-index fabric-index :fabric-filtered fabric-filtered) reports))))
+            (let ((report (%path-report node concrete :session session :fabric-filtered fabric-filtered :expanded t)))
+              (when report (push report reports))))))
     (setf reports (nreverse reports))
     (if filters
         (remove-if (lambda (report) (%filtered-out-p node report filters)) reports)
@@ -200,9 +215,24 @@ statuses), as the fabric FABRIC-INDEX sees them."
 ;;; ------------------------------------------------------------------
 ;;; Server: writing and invoking
 
-(defun %apply-write (node data)
-  "Apply one AttributeDataIB; returns its ATTRIBUTE-STATUS."
-  (let* ((path (attribute-data-path data))
+(defun %check-write-access (node session endpoint cluster attribute-id)
+  "The peer of SESSION is about to write the attribute: it must exist, be
+writable, and be theirs to write (in that order of refusal)."
+  (let ((attribute (%attribute cluster attribute-id)))
+    (unless (attribute-present-p cluster attribute-id)
+      (%im-fail :unsupported-attribute "~a does not have the optional attribute ~a"
+                cluster (attribute-definition-name attribute)))
+    (unless (and (attribute-definition-writable attribute) (not (attribute-definition-computed attribute)))
+      (%im-fail :unsupported-write "~a of ~a is not writable" (attribute-definition-name attribute) cluster))
+    (unless (access-granted-p node session endpoint (cluster-id cluster) (attribute-definition-write-privilege attribute))
+      (%im-fail :unsupported-access "~a may not write ~a of ~a: ~a needed"
+                session (attribute-definition-name attribute) cluster
+                (privilege-name (attribute-definition-write-privilege attribute))))))
+
+(defun %apply-write (model data)
+  "Apply one AttributeDataIB for the peer of *INTERACTION-SESSION*; returns its ATTRIBUTE-STATUS."
+  (let* ((node (interaction-model-node model))
+         (path (attribute-data-path data))
          (endpoint (and (attribute-path-endpoint path) (find-endpoint node (attribute-path-endpoint path))))
          (cluster (and endpoint (attribute-path-cluster path) (find-cluster endpoint (attribute-path-cluster path))))
          (status (handler-case
@@ -210,6 +240,9 @@ statuses), as the fabric FABRIC-INDEX sees them."
                             (%im-fail :invalid-action "a write path must be concrete: ~a" path))
                            ((null endpoint) (im-status :unsupported-endpoint))
                            ((null cluster) (im-status :unsupported-cluster))
+                           ((progn (%check-write-access node *interaction-session* endpoint cluster
+                                                        (attribute-path-attribute path))
+                                   nil))
                            ((and (attribute-data-data-version data)
                                  (/= (attribute-data-data-version data) (cluster-data-version cluster)))
                             (im-status :data-version-mismatch))
@@ -219,15 +252,18 @@ statuses), as the fabric FABRIC-INDEX sees them."
                               (im-status :success)))
                    (interaction-error (e)
                      (when (= +im-status-invalid-action+ (interaction-error-status e)) (error e))
+                     (%trace-model model "write to ~a refused: ~a" path e)
                      (im-status (interaction-error-status e) (interaction-error-cluster-status e))))))
     (make-attribute-status :path path :status status)))
 
-(defun %apply-invoke (node data timed)
-  "Run one CommandDataIB; returns its INVOKE-RESPONSE."
-  (let* ((path (command-data-path data))
+(defun %apply-invoke (model data timed)
+  "Run one CommandDataIB for the peer of *INTERACTION-SESSION*; returns its INVOKE-RESPONSE."
+  (let* ((node (interaction-model-node model))
+         (path (command-data-path data))
          (ref (command-data-ref data))
          (endpoint (and (command-path-endpoint path) (find-endpoint node (command-path-endpoint path))))
-         (cluster (and endpoint (find-cluster endpoint (command-path-cluster path)))))
+         (cluster (and endpoint (find-cluster endpoint (command-path-cluster path))))
+         (command (and cluster (find-command-definition (cluster-definition cluster) (command-path-command path)))))
     (flet ((status (status)
              (make-invoke-response :status (make-command-status :path path :status status :ref ref))))
       (handler-case
@@ -235,20 +271,27 @@ statuses), as the fabric FABRIC-INDEX sees them."
                  (%im-fail :invalid-action "an invoke path must name its endpoint: ~a" path))
                 ((null endpoint) (status (im-status :unsupported-endpoint)))
                 ((null cluster) (status (im-status :unsupported-cluster)))
-                (t (let ((command (find-command-definition (cluster-definition cluster) (command-path-command path))))
-                     (if (and command (command-definition-timed command) (not timed))
-                         (status (im-status :needs-timed-interaction))
-                         (multiple-value-bind (response-id result)
-                             (invoke-cluster-command cluster (command-path-command path) (command-data-fields data))
-                           (if response-id
-                               (make-invoke-response
-                                :command (make-command-data :path (command-path (command-path-endpoint path)
-                                                                                (command-path-cluster path)
-                                                                                response-id)
-                                                            :fields result :ref ref))
-                               (status result)))))))
+                ((not (and command (command-handler cluster (command-definition-id command))))
+                 (status (im-status :unsupported-command)))
+                ((not (access-granted-p node *interaction-session* endpoint (cluster-id cluster)
+                                        (command-definition-privilege command)))
+                 (%trace-model model "~a may not invoke ~a of ~a: ~a needed" *interaction-session*
+                               (command-definition-name command) cluster (privilege-name (command-definition-privilege command)))
+                 (status (im-status :unsupported-access)))
+                ((and (command-definition-timed command) (not timed))
+                 (status (im-status :needs-timed-interaction)))
+                (t (multiple-value-bind (response-id result)
+                       (invoke-cluster-command cluster (command-path-command path) (command-data-fields data))
+                     (if response-id
+                         (make-invoke-response
+                          :command (make-command-data :path (command-path (command-path-endpoint path)
+                                                                          (command-path-cluster path)
+                                                                          response-id)
+                                                      :fields result :ref ref))
+                         (status result)))))
         (interaction-error (e)
           (when (= +im-status-invalid-action+ (interaction-error-status e)) (error e))
+          (%trace-model model "invoke of ~a refused: ~a" path e)
           (status (im-status (interaction-error-status e) (interaction-error-cluster-status e))))))))
 
 ;;; ------------------------------------------------------------------
@@ -345,19 +388,20 @@ statuses), as the fabric FABRIC-INDEX sees them."
           (server-state-chunks state)
           (or (%chunk-reports (%collect-reports node (read-request-attribute-requests message)
                                                 :filters (read-request-data-version-filters message)
-                                                :fabric-index (session-fabric-index (exchange-session exchange))
+                                                :session (exchange-session exchange)
                                                 :fabric-filtered (read-request-fabric-filtered message)))
               (list '())))
     (%send-report-chunk exchange state :suppress-last t)))
 
 (defun %responder-write (model exchange state message)
-  (let ((node (%require-node model)))
+  (%require-node model)
+  (progn
     (unless (member (server-state-kind state) '(nil :timed :write))
       (%im-fail :invalid-action "a write cannot continue a ~a" (server-state-kind state)))
     (unless (eq (server-state-kind state) :write) ; the first chunk
       (%check-timed model exchange state (write-request-timed-request message)))
     (setf (server-state-kind state) :write)
-    (let ((responses (mapcar (lambda (data) (%apply-write node data)) (write-request-write-requests message))))
+    (let ((responses (mapcar (lambda (data) (%apply-write model data)) (write-request-write-requests message))))
       (cond ((write-request-more-chunked-messages message)
              (setf (exchange-response-timeout exchange) *interaction-timeout*)
              (%send exchange (make-write-response :write-responses responses)))
@@ -369,7 +413,8 @@ statuses), as the fabric FABRIC-INDEX sees them."
              (exchange-close exchange))))))
 
 (defun %responder-invoke (model exchange state message)
-  (let ((node (%require-node model)))
+  (%require-node model)
+  (progn
     (unless (member (server-state-kind state) '(nil :timed))
       (%im-fail :invalid-action "an invoke cannot continue a ~a" (server-state-kind state)))
     (%check-timed model exchange state (invoke-request-timed-request message))
@@ -377,7 +422,7 @@ statuses), as the fabric FABRIC-INDEX sees them."
     (let ((requests (invoke-request-invoke-requests message)))
       (when (/= 1 (length requests))
         (%im-fail :invalid-action "one command per invoke (MaxPathsPerInvoke), got ~d" (length requests)))
-      (let ((responses (mapcar (lambda (data) (%apply-invoke node data (invoke-request-timed-request message)))
+      (let ((responses (mapcar (lambda (data) (%apply-invoke model data (invoke-request-timed-request message)))
                                requests)))
         (unless (invoke-request-suppress-response message)
           (%send exchange (make-invoke-response-message :invoke-responses responses)))
@@ -408,7 +453,7 @@ statuses), as the fabric FABRIC-INDEX sees them."
             (server-state-chunks state)
             (or (%chunk-reports (%collect-reports node paths
                                                   :filters (subscribe-request-data-version-filters message)
-                                                  :fabric-index (session-fabric-index session)
+                                                  :session session
                                                   :fabric-filtered (subscribe-request-fabric-filtered message)))
                 (list '())))
       (%send-report-chunk exchange state :subscription-id (server-subscription-id subscription)))))
@@ -474,12 +519,15 @@ statuses), as the fabric FABRIC-INDEX sees them."
 
 (defun %send-subscription-report (model subscription now)
   (let* ((node (interaction-model-node model))
+         (session (server-subscription-session subscription))
+         (asked (server-subscription-paths subscription))
          (paths (reverse (server-subscription-dirty subscription)))
-         (reports (mapcar (lambda (path)
-                            (%path-report node path
-                                          :fabric-index (session-fabric-index (server-subscription-session subscription))
-                                          :fabric-filtered (server-subscription-fabric-filtered subscription)))
-                          paths))
+         ;; a path only a wildcard covers is left out when the peer may not read it, as at priming
+         (reports (loop :for path :in paths
+                        :for report := (%path-report node path :session session
+                                                     :fabric-filtered (server-subscription-fabric-filtered subscription)
+                                                     :expanded (not (member path asked :test #'equalp)))
+                        :when report :collect report))
          (exchange (open-exchange (interaction-model-manager model) (server-subscription-session subscription)
                                   +protocol-interaction-model+
                                   :handler (lambda (exchange event &rest data)
