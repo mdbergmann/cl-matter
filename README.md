@@ -16,126 +16,102 @@ makes Thread devices reachable as ordinary IPv6 nodes.
 
 ## Status
 
-Early. `cl-matter/net` is functional on AmiLisp (all operations) and on
-SBCL (IPv4 datagrams; multicast and interfaces pending). The DNS message
-codec is complete: `encode-message` / `decode-message` with name
-compression, the QU and cache-flush bits, and typed record data for PTR,
-SRV, TXT, A, AAAA and NSEC (see `test/dns-sd-test.lisp`, which decodes
-packets captured from a real mDNS responder). The querier works:
-`browse` lists the instances of a service type and `resolve` turns one
-into host, port, addresses and TXT properties, over a shared port 5353
-with the group joined where the backend can (AmiLisp), and as legacy
-unicast queries where it cannot (SBCL for now). The responder advertises
-this host's services: it probes for its names and renames on conflict,
-announces, answers queries with the additionals DNS-SD asks for, suppresses
-known answers, uses the legacy unicast format for queries from other ports,
-and says goodbye on stop. The Matter TLV codec is complete:
-`tlv-encode` / `tlv-decode` over `tlv-element` structs with every tag form
-and element type of Appendix A, verified against the specification's
-examples (`test/tlv-test.lisp`). Message framing is in place: the message
-and protocol headers, whole unsecured messages, the Secure Channel status
-report, outgoing counters, the receive window that rejects duplicate and
-stale counters, and the MRP retransmission schedule (`test/message-test.lisp`).
-The crypto primitives of the secure channel are in (`src/matter/crypto.lisp`):
-SHA-256, HMAC, HKDF and PBKDF2 (the runtime's native digests on AmiLisp,
-Ironclad on SBCL), AES-CCM built on Ironclad's AES since Ironclad has no CCM
-mode, the 13-octet message nonce, and `encode-secured-message` /
-`decode-secured-message` with the header as additional data and the 16-octet
-MIC, checked against RFC 3610, SP 800-38C and OpenSSL vectors
-(`test/crypto-test.lisp`). PASE is done: SPAKE2+ on P-256
-(`src/matter/spake2p.lisp`, the RFC 9383 construction with Matter's key
-schedule, verified against the RFC's and the Matter SDK's vectors,
-`test/spake2p-test.lisp`) and the five-message handshake
-(`src/matter/pase.lisp`): the PBKDFParam and Pake message codecs, session
-parameters, and an initiator and a responder driven by `pase-handle` with
-(opcode, payload) pairs, so a whole handshake runs without a socket
-(`test/pase-test.lisp`). CASE is done too: P-256 key pairs, ECDH and ECDSA
-(`src/matter/p256.lisp`), Matter operational certificates with their
-mapping to X.509 DER, chain validation and the generation of an
-RCAC/ICAC/NOC chain of our own (`src/matter/certificate.lisp`, byte-exact
-against the SDK's test certificates in `test/sdk-certificates.lisp`),
-fabrics with the compressed fabric id, the IPK and the CASE destination id
-(`src/matter/fabric.lisp`, the specification's vectors), and the Sigma
-handshake with session resumption (`src/matter/case.lisp`), driven like
-PASE by `case-handle` (`test/case-test.lisp`). Both handshakes now run over
-UDP: the session layer (`src/matter/session.lisp`) frames, encrypts and
-counter-checks messages per peer and keeps the sessions of a node; the
-exchange manager (`src/matter/exchange.lisp`) pairs requests with responses
-on exchanges and runs the Message Reliability Protocol for all of them
-(piggybacked and standalone acknowledgements, retransmission on the
-specification's backoff, duplicate suppression, one reliable message in
-flight per exchange) from a single poll loop over a transport; and the
-Secure Channel driver (`src/matter/secure-channel.lisp`) carries PASE and
-CASE on it, installs the session each one yields, remembers CASE
-resumption state for the next time, answers BUSY while a PASE handshake is
-running, and does CloseSession. Application protocols plug in as handler
-functions per protocol id. `test/exchange-test.lisp` drives two nodes over
-an in-memory network with a stepped clock (lossy links, retransmission
-schedules, timeouts) and over real loopback UDP sockets. The Interaction
-Model runs on that: its message codec (`src/matter/interaction-codec.lisp`,
-every path, information block and message of chapter 10), a data model
-(`src/matter/data-model.lisp`: `define-cluster` describes a cluster's
-attributes and commands with their types, a node is endpoints of cluster
-instances with values, data versions and command handlers, and the global
-attributes are computed), the first clusters (`src/matter/clusters.lisp`:
-Descriptor, Basic Information, Identify, On/Off), and the engine
-(`src/matter/interaction.lisp`) that serves Read, Write, Invoke and
-Subscribe from a node and performs them against a peer: wildcard paths,
-per-path statuses, chunked reports, data version filters, timed requests,
-and subscriptions that report changes after the minimum interval and keep
-alive at the maximum, in both directions. `test/data-model-test.lisp` and
-`test/interaction-test.lisp` cover it, the last one with a server thread
-over UDP after a PASE handshake. Commissioning is in: X.509 DER is read as
-well as written (`src/matter/der.lisp`, with base64 and PEM), so device
-attestation certificates and PAA roots import into the same `certificate`
-struct (`decode-certificate-der`, `decode-certificate-pem`, EC private keys
-from PEM); `src/matter/attestation.lisp` has the attestation and NOCSR
-elements, the DAC-signed attestation signature, PKCS#10 certificate
-signing requests, the certification declaration in its CMS envelope
-(signed by the CSA's keys or the SDK's test key), the PAA trust store, and
-`verify-device-attestation` / `verify-nocsr`, the commissioner's checks of
-section 6.2.3, verified against the Matter SDK's vectors
-(`test/sdk-attestation.lisp`, `test/attestation-test.lisp`);
-`src/matter/commissioning.lisp` defines General Commissioning,
-Operational Credentials, Network Commissioning (Ethernet), Access
-Control and Administrator Commissioning, a `device` that serves them from
-a fabric table with the fail-safe and its reverts, and a `commissioner`
-that runs the flow of section 5.5 over PASE: arm the fail-safe,
-regulatory configuration, attestation, CSR, root and NOC, CASE as the new
-administrator, CommissioningComplete. Attributes can be fabric-scoped
-(`define-cluster`'s `:fabric-scoped` and `:fabric-sensitive`): the NOCs,
-Fabrics and ACL lists show each fabric its own entries. The commissioning
-window is the device's (section 5.4.2.3): the basic one with the device's
-own passcode, or an enhanced one an administrator opens for the next
-administrator over the Administrator Commissioning cluster (section
-11.19) with a verifier and discriminator of its choosing, timed, revocable,
-reflected in WindowStatus / AdminFabricIndex / AdminVendorId and in the
-advertisement's commissioning mode; `request-commissioning-window` is the
-commissioner's side and hands back the onboarding payload the next
-administrator types in. `test/commissioning-test.lisp`
-runs the flow on the in-memory rig and over UDP, drives every cluster
-command by hand, lets fail-safes and windows expire, and brings a second
-administrator in through a window the first one opened. What of this
-survives a restart is `src/matter/persistence.lisp`: the fabric table with
-its operational keys and IPKs, the ACL, the CASE resumption records and
-the attributes administrators wrote, as a plist of plain data
-(`device-state`) that `make-device :storage` keeps in a file by itself,
-committed at CommissioningComplete and never while a fail-safe still holds
-a fabric; a commissioner keeps its fabric, its root key and its resumption
-records the same way (`commissioner-state`, `make-commissioner :state`).
-`test/persistence-test.lisp` restarts both from their files and resumes
-the session between them. The ACL is enforced
-(`src/matter/access.lisp`, section 6.6): every attribute names the
-privilege it takes to read and to write it and every command the one to
-invoke it (`define-cluster`'s `:read`, `:write` and `:access`, with the
-specification's View / Operate defaults and overrides on the clusters
-defined here), and a request on a CASE session is granted what the
-entries of its fabric give its node id or CASE Authenticated Tags on the
-cluster, endpoint or device type asked for; a PASE session is the
-commissioner and administers everything. A concrete path the peer may
-not touch is answered UNSUPPORTED_ACCESS, a wildcard leaves it out.
-`test/access-test.lisp` covers the matching and the enforcement of
-reads, writes, invokes and subscriptions.
+Early, but a cl-matter lamp is commissioned, controlled and
+re-administered by chip-tool, and comes back commissioned after a restart.
+Layer by layer, bottom up; every layer's test file is its specification
+and the place to see it used.
+
+- **Sockets** (`cl-matter/net`): unconnected UDP, multicast and interface
+  enumeration behind one protocol. Complete on AmiLisp; SBCL has IPv4
+  datagrams only, multicast and interfaces pending. `test/net-test.lisp`.
+- **DNS messages** (`src/dns-sd/message.lisp`): the codec with name
+  compression, the QU and cache-flush bits, typed record data for PTR, SRV,
+  TXT, A, AAAA and NSEC. `test/dns-sd-test.lisp` decodes packets captured
+  from a real mDNS responder.
+- **mDNS querier** (`src/dns-sd/mdns.lisp`): `browse` lists a service
+  type's instances, `resolve` turns one into host, port, addresses and TXT
+  properties; a shared port 5353 with the group joined where the backend
+  can, legacy unicast queries where it cannot (SBCL).
+- **mDNS responder** (`src/dns-sd/responder.lisp`): advertises this host's
+  services; probes and renames on conflict, announces, answers with the
+  additionals DNS-SD asks for, suppresses known answers, uses the legacy
+  unicast format for other ports, says goodbye on stop.
+- **TLV** (`src/matter/tlv.lisp`): every tag form and element type of
+  Appendix A, verified against the specification's examples.
+  `test/tlv-test.lisp`.
+- **Message framing** (`src/matter/message.lisp`): message and protocol
+  headers, unsecured messages, the status report, outgoing counters, the
+  receive window, the MRP retransmission schedule. `test/message-test.lisp`.
+- **Crypto** (`src/matter/crypto.lisp`, `src/matter/p256.lisp`): SHA-256,
+  HMAC, HKDF, PBKDF2 (the runtime's native digests on AmiLisp, Ironclad on
+  SBCL), AES-CCM built on Ironclad's AES, the message nonce, secured
+  messages with the 16-octet MIC; P-256 key pairs, ECDH and ECDSA. Checked
+  against RFC 3610, SP 800-38C and OpenSSL vectors. `test/crypto-test.lisp`.
+- **PASE** (`src/matter/spake2p.lisp`, `src/matter/pase.lisp`): SPAKE2+
+  per RFC 9383 with Matter's key schedule, verified against the RFC's and
+  the SDK's vectors; the five-message handshake as an initiator and a
+  responder driven with (opcode, payload) pairs, so it runs without a
+  socket. `test/spake2p-test.lisp`, `test/pase-test.lisp`.
+- **Certificates and fabrics** (`src/matter/certificate.lisp`,
+  `src/matter/der.lisp`, `src/matter/fabric.lisp`): Matter operational
+  certificates and their X.509 DER mapping both ways, PEM, chain
+  validation, our own RCAC/ICAC/NOC chains; byte-exact against the SDK's
+  test certificates. Fabrics with the compressed fabric id, the IPK and
+  the CASE destination id. `test/certificate-test.lisp`.
+- **CASE** (`src/matter/case.lisp`): the Sigma handshake with session
+  resumption, driven like PASE. `test/case-test.lisp`.
+- **Sessions and exchanges** (`src/matter/session.lisp`,
+  `src/matter/exchange.lisp`, `src/matter/secure-channel.lisp`): the
+  session layer frames, encrypts and counter-checks per peer; the exchange
+  manager pairs requests with responses and runs MRP (acknowledgements,
+  retransmission on the backoff, duplicate suppression) from one poll loop
+  over a transport; the Secure Channel carries PASE and CASE on it,
+  installs the sessions, remembers resumption state, answers BUSY, closes
+  sessions. Application protocols are handler functions per protocol id.
+  `test/exchange-test.lisp` drives two nodes over an in-memory network
+  with a stepped clock and over loopback UDP.
+- **Interaction Model** (`src/matter/interaction-codec.lisp`,
+  `src/matter/data-model.lisp`, `src/matter/clusters.lisp`,
+  `src/matter/interaction.lisp`): every message of chapter 10;
+  `define-cluster` for attributes and commands with their types, nodes of
+  endpoints of cluster instances; Descriptor, Basic Information, Identify
+  and On/Off; Read, Write, Invoke and Subscribe served from a node and
+  performed against a peer, with wildcard paths, per-path statuses,
+  chunked reports, data version filters, timed requests and subscriptions.
+  `test/data-model-test.lisp`, `test/interaction-test.lisp`.
+- **Attestation** (`src/matter/attestation.lisp`): attestation and NOCSR
+  elements, the DAC-signed signature, PKCS#10 CSRs, the certification
+  declaration in its CMS envelope, the PAA trust store, and the
+  commissioner's checks of section 6.2.3, against the SDK's vectors.
+  `test/attestation-test.lisp`.
+- **Commissioning** (`src/matter/commissioning.lisp`): General
+  Commissioning, Operational Credentials, Network Commissioning (Ethernet),
+  Access Control and Administrator Commissioning; a `device` with its
+  fabric table, fail-safe and commissioning window (basic with its own
+  passcode, or enhanced, opened by an administrator for the next one); a
+  `commissioner` running the flow of section 5.5 over PASE through to CASE
+  and CommissioningComplete; fabric-scoped attributes.
+  `test/commissioning-test.lisp` runs it on the rig and over UDP and
+  brings a second administrator in through a window.
+- **Access control** (`src/matter/access.lisp`): every attribute and
+  command carries the privilege it takes; a CASE session gets what its
+  fabric's ACL entries grant its node id or CATs; PASE administers.
+  `test/access-test.lisp`.
+- **Persistence** (`src/matter/persistence.lisp`): the fabric table with
+  its keys, the ACL, the resumption records and the attributes
+  administrators wrote, kept in a state file the device rewrites by itself,
+  committed at CommissioningComplete; a commissioner likewise.
+  `test/persistence-test.lisp` restarts both and resumes their session.
+- **Discovery** (`src/matter/discovery.lisp`): the commissionable and
+  operational advertisements that follow the window and the fabric table,
+  the onboarding payload with QR and manual pairing codes, the
+  commissioner's search. `test/discovery-test.lisp`.
+- **Interop**: `examples/lamp-device.lisp` on the real network, driven by
+  chip-tool (pairing, On/Off, ACL writes, a second administrator through
+  an opened window, unpair, restart).
+
+The API in sketches, bottom up (each one is a call sequence from the
+layer's test file):
 
 ```lisp
 ;; the commissionee stores a verifier, never the passcode
