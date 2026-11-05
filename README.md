@@ -215,7 +215,10 @@ command by hand, and lets fail-safes expire.
 `test/discovery-test.lisp` is the reference: the TXT keys and subtypes of
 section 4.3, the SDK's example QR and manual codes, and a device whose
 advertisement follows its window and fabric table over a loopback
-responder.
+responder.  `examples/lamp-device.lisp` puts all of it on the real network:
+a lamp on port 5540 that chip-tool commissions with
+`chip-tool pairing code 1 34970112332` and switches with
+`chip-tool onoff toggle 1 1`.
 
 ```lisp
 (dns-sd:browse "_http._tcp")
@@ -277,9 +280,11 @@ Nothing talks to a real Matter device yet. In the order it will be built:
 - **SBCL backend**: multicast membership and interface enumeration are
   still missing, so on SBCL the querier uses legacy unicast and the
   responder cannot run.
-- **Interop**: nothing has been tried against chip-tool or a real device.
-  Everything so far is verified against specification and RFC vectors and
-  against the Matter SDK's test vectors only.
+- **Interop**: chip-tool (the Matter SDK's reference controller) commissions
+  `examples/lamp-device.lisp`, toggles and reads it, and removes its fabric
+  again (2026-11-05, SDK master on macOS).  No other controller and no real
+  device has been tried yet; cl-matter's own commissioner has only
+  commissioned cl-matter devices.
 
 ## Build and test
 
@@ -297,4 +302,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. Next: an interop test against chip-tool.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. Next: ACL enforcement, Administrator Commissioning, fabric persistence.
