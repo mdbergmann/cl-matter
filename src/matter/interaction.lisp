@@ -113,8 +113,9 @@ subscription and a reason when it ends."
 ;;; ------------------------------------------------------------------
 ;;; Server: reading the data model
 
-(defun %path-report (node path)
-  "The ATTRIBUTE-REPORT of the concrete PATH: its data, or a status."
+(defun %path-report (node path &key (fabric-index 0) fabric-filtered)
+  "The ATTRIBUTE-REPORT of the concrete PATH: its data, or a status, as
+the fabric FABRIC-INDEX sees it."
   (flet ((status (status) (make-attribute-report
                            :status (make-attribute-status :path path :status (im-status status)))))
     (let* ((endpoint (find-endpoint node (attribute-path-endpoint path)))
@@ -128,7 +129,9 @@ subscription and a reason when it ends."
                                                :path (attribute-path (attribute-path-endpoint path)
                                                                      (attribute-path-cluster path)
                                                                      (attribute-path-attribute path))
-                                               :data (read-attribute cluster (attribute-path-attribute path))))
+                                               :data (read-attribute cluster (attribute-path-attribute path)
+                                                                     :fabric-index fabric-index
+                                                                     :fabric-filtered fabric-filtered)))
                  (interaction-error (e) (status (interaction-error-status e)))))))))
 
 (defun %expand-path (node pattern)
@@ -159,14 +162,15 @@ subscription and a reason when it ends."
                           (and cluster (= (data-version-filter-data-version filter) (cluster-data-version cluster)))))))
                filters))))
 
-(defun %collect-reports (node paths &optional filters)
-  "Reports for PATHS (wildcards expanded, concrete misses reported as statuses)."
+(defun %collect-reports (node paths &key filters (fabric-index 0) fabric-filtered)
+  "Reports for PATHS (wildcards expanded, concrete misses reported as
+statuses), as the fabric FABRIC-INDEX sees them."
   (let ((reports '()))
     (dolist (path paths)
       (if (attribute-path-concrete-p path)
-          (push (%path-report node path) reports)
+          (push (%path-report node path :fabric-index fabric-index :fabric-filtered fabric-filtered) reports)
           (dolist (concrete (%expand-path node path))
-            (push (%path-report node concrete) reports))))
+            (push (%path-report node concrete :fabric-index fabric-index :fabric-filtered fabric-filtered) reports))))
     (setf reports (nreverse reports))
     (if filters
         (remove-if (lambda (report) (%filtered-out-p node report filters)) reports)
@@ -210,7 +214,8 @@ subscription and a reason when it ends."
                                  (/= (attribute-data-data-version data) (cluster-data-version cluster)))
                             (im-status :data-version-mismatch))
                            (t (write-attribute cluster (attribute-path-attribute path) (attribute-data-data data)
-                                               :list-index (attribute-path-list-index path))
+                                               :list-index (attribute-path-list-index path)
+                                               :fabric-index (session-fabric-index *interaction-session*))
                               (im-status :success)))
                    (interaction-error (e)
                      (when (= +im-status-invalid-action+ (interaction-error-status e)) (error e))
@@ -339,7 +344,9 @@ subscription and a reason when it ends."
     (setf (server-state-kind state) :read
           (server-state-chunks state)
           (or (%chunk-reports (%collect-reports node (read-request-attribute-requests message)
-                                                (read-request-data-version-filters message)))
+                                                :filters (read-request-data-version-filters message)
+                                                :fabric-index (session-fabric-index (exchange-session exchange))
+                                                :fabric-filtered (read-request-fabric-filtered message)))
               (list '())))
     (%send-report-chunk exchange state :suppress-last t)))
 
@@ -399,7 +406,10 @@ subscription and a reason when it ends."
       (setf (server-state-kind state) :subscribe
             (server-state-subscription state) subscription
             (server-state-chunks state)
-            (or (%chunk-reports (%collect-reports node paths (subscribe-request-data-version-filters message)))
+            (or (%chunk-reports (%collect-reports node paths
+                                                  :filters (subscribe-request-data-version-filters message)
+                                                  :fabric-index (session-fabric-index session)
+                                                  :fabric-filtered (subscribe-request-fabric-filtered message)))
                 (list '())))
       (%send-report-chunk exchange state :subscription-id (server-subscription-id subscription)))))
 
@@ -465,7 +475,11 @@ subscription and a reason when it ends."
 (defun %send-subscription-report (model subscription now)
   (let* ((node (interaction-model-node model))
          (paths (reverse (server-subscription-dirty subscription)))
-         (reports (mapcar (lambda (path) (%path-report node path)) paths))
+         (reports (mapcar (lambda (path)
+                            (%path-report node path
+                                          :fabric-index (session-fabric-index (server-subscription-session subscription))
+                                          :fabric-filtered (server-subscription-fabric-filtered subscription)))
+                          paths))
          (exchange (open-exchange (interaction-model-manager model) (server-subscription-session subscription)
                                   +protocol-interaction-model+
                                   :handler (lambda (exchange event &rest data)

@@ -334,6 +334,17 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:der-utc-time
    #:der-generalized-time
    #:der-context
+   ;; DER decoding, base64, PEM (der.lisp)
+   #:der-error #:der-error-message #:der-node #:der-node-p #:der-node-tag #:der-node-octets
+   #:der-node-start #:der-node-content-start #:der-node-end #:der-node-children #:der-node-constructed-p
+   #:der-node-class #:der-node-number #:der-node-content #:der-node-whole #:der-node-length
+   #:der-decode #:*der-max-depth* #:der-context-tag #:der-expect #:der-children #:der-child #:der-optional-child
+   #:der-node-integer #:der-node-unsigned-octets #:der-node-boolean #:der-node-oid #:der-node-string
+   #:der-node-bit-string #:der-node-bit-string-flags #:der-node-octet-string #:der-node-time
+   #:+der-boolean+ #:+der-integer+ #:+der-bit-string+ #:+der-octet-string+ #:+der-null+ #:+der-oid+
+   #:+der-utf8-string+ #:+der-printable-string+ #:+der-ia5-string+ #:+der-utc-time+ #:+der-generalized-time+
+   #:+der-sequence+ #:+der-set+
+   #:base64-encode #:base64-decode #:pem-encode #:pem-decode #:pem-block #:read-pem-file
    ;; certificates (certificate.lisp)
    #:certificate-error
    #:certificate-error-message
@@ -391,6 +402,9 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:make-root-certificate
    #:make-ica-certificate
    #:make-node-certificate
+   #:decode-certificate-der #:decode-certificate-pem #:certificate-from-octets
+   #:ecdsa-signature-from-der #:certificate-vendor-id #:certificate-product-id
+   #:decode-ec-private-key #:decode-ec-private-key-pem #:encode-ec-private-key
    ;; fabrics (fabric.lisp)
    #:+compressed-fabric-id-length+
    #:+epoch-key-length+
@@ -418,7 +432,24 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:fabric-operational-instance-name
    #:fabric-destination-id
    #:make-test-fabric
-   #:fabric-add-node
+   #:fabric-add-node #:fabric-index
+   ;; device attestation and the CSR (attestation.lisp)
+   #:attestation-error #:attestation-error-reason #:attestation-error-message
+   #:+attestation-nonce-length+ #:+attestation-elements-max-length+ #:+certificate-chain-dac+ #:+certificate-chain-pai+
+   #:encode-attestation-elements #:decode-attestation-elements #:encode-nocsr-elements #:decode-nocsr-elements
+   #:attestation-tbs #:sign-attestation #:verify-attestation-signature
+   #:*csr-default-subject* #:make-certificate-signing-request #:decode-certificate-signing-request
+   #:*cd-signing-keys* #:add-cd-signing-key
+   #:encode-certification-declaration-tlv #:decode-certification-declaration-tlv
+   #:encode-certification-declaration #:decode-certification-declaration
+   #:*paa-trust-store* #:add-trusted-paa #:find-trusted-paa #:validate-paa #:validate-attestation-chain
+   #:verify-device-attestation #:verify-nocsr
+   #:attestation-credentials #:attestation-credentials-p #:make-attestation-credentials
+   #:attestation-credentials-dac #:attestation-credentials-pai #:attestation-credentials-keypair
+   #:attestation-credentials-certification-declaration #:attestation-credentials-firmware-info
+   #:attestation-credentials-vendor-id #:attestation-credentials-product-id
+   #:*test-dac-pem* #:*test-dac-key-pem* #:*test-pai-pem* #:*test-paa-pems* #:*test-certification-declaration*
+   #:test-attestation-credentials
    ;; CASE (case.lisp)
    #:case-error
    #:case-error-message
@@ -757,4 +788,36 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:interaction-failed-p
    #:start-read #:start-write #:start-invoke #:start-subscribe #:interaction-abort #:interaction-wait
    #:read-attributes #:write-attributes #:invoke-command #:subscribe-attributes
-   #:attribute-report-value #:attribute-write #:command-fields #:invoke-response-value))
+   #:attribute-report-value #:attribute-write #:command-fields #:invoke-response-value
+   #:session-fabric-index
+   ;; commissioning (commissioning.lisp)
+   #:+cluster-access-control+ #:+cluster-general-commissioning+ #:+cluster-network-commissioning+
+   #:+cluster-operational-credentials+
+   #:+commissioning-ok+ #:+commissioning-value-outside-range+ #:+commissioning-invalid-authentication+
+   #:+commissioning-no-fail-safe+ #:+commissioning-busy-with-other-admin+
+   #:+regulatory-indoor+ #:+regulatory-outdoor+ #:+regulatory-indoor-outdoor+
+   #:+noc-status-ok+ #:+noc-status-invalid-public-key+ #:+noc-status-invalid-node-op-id+ #:+noc-status-invalid-noc+
+   #:+noc-status-missing-csr+ #:+noc-status-table-full+ #:+noc-status-invalid-admin-subject+
+   #:+noc-status-fabric-conflict+ #:+noc-status-label-conflict+ #:+noc-status-invalid-fabric-index+
+   #:+privilege-view+ #:+privilege-proxy-view+ #:+privilege-operate+ #:+privilege-manage+ #:+privilege-administer+
+   #:+auth-mode-pase+ #:+auth-mode-case+ #:+auth-mode-group+ #:+network-commissioning-feature-ethernet+
+   #:+max-fabric-index+ #:+max-cumulative-fail-safe-seconds+ #:*fabric-removal-delay*
+   #:*subjects-per-acl-entry* #:*targets-per-acl-entry* #:*acl-entries-per-fabric*
+   #:make-ethernet-network-commissioning-cluster #:acl-entry #:cat-subject-p
+   #:commissioning-error #:commissioning-error-step #:commissioning-error-message
+   #:fail-safe #:fail-safe-p #:fail-safe-session #:fail-safe-fabric #:fail-safe-expiry #:fail-safe-armed-at
+   #:fail-safe-root #:fail-safe-keypair #:fail-safe-added-fabric
+   #:device #:device-p #:make-device #:device-node #:device-channel #:device-model #:device-manager
+   #:device-credentials #:device-vendor-id #:device-product-id #:device-fabrics #:device-max-fabrics
+   #:device-fail-safe #:device-general-commissioning #:device-operational-credentials
+   #:device-network-commissioning #:device-access-control #:device-on-commissioned #:device-on-fabric-removed
+   #:device-now #:device-acl #:find-device-fabric #:remove-device-fabric
+   #:open-commissioning-window #:close-commissioning-window #:commissioning-window-open-p
+   #:commissioner #:commissioner-p #:make-commissioner #:commissioner-channel #:commissioner-model
+   #:commissioner-fabric #:commissioner-root-keypair #:commissioner-ica-keypair #:commissioner-vendor-id
+   #:commissioner-next-node-id #:commissioner-trust-store #:commissioner-cd-signing-keys #:commissioner-issue-noc
+   #:commissioning #:commissioning-p #:commissioning-commissioner #:commissioning-host #:commissioning-port
+   #:commissioning-node-id #:commissioning-state #:commissioning-step #:commissioning-result
+   #:commissioning-condition #:commissioning-pase-session #:commissioning-case-session
+   #:commissioning-running-p #:commissioning-complete-p #:commissioning-failed-p
+   #:start-commissioning #:commissioning-wait #:commission))

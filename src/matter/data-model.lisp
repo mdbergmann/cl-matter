@@ -176,8 +176,13 @@ and command handlers run for it; NIL for local access.")
 (defstruct attribute-definition
   "One attribute of a cluster.  COMPUTED, a function of the cluster
 instance, replaces the stored value; OPTIONAL attributes exist on an
-instance only when given a value."
-  name (id 0) (type :uint8) (writable nil) (default nil) (computed nil) (optional nil))
+instance only when given a value.  A FABRIC-SCOPED attribute is a list of
+plists each carrying :FABRIC-INDEX: a fabric reads and writes its own
+entries, and the FABRIC-SENSITIVE fields of other fabrics' entries are
+withheld.  CHECK, a function of (cluster new-value), validates a peer's
+write and signals INTERACTION-ERROR to refuse it."
+  name (id 0) (type :uint8) (writable nil) (default nil) (computed nil) (optional nil)
+  (fabric-scoped nil) (fabric-sensitive nil) (check nil))
 
 (defstruct command-definition
   "One command of a cluster.  FIELDS is a (:struct ...) field list;
@@ -223,7 +228,8 @@ commands are responses, never accepted; TIMED ones need a timed interaction."
 
 (defmacro define-cluster (name (id &key (revision 1)) &body sections)
   "Define cluster NAME with ID.  SECTIONS:
-  (:attributes (name id type &key writable default computed optional) ...)
+  (:attributes (name id type &key writable default computed optional
+                              fabric-scoped fabric-sensitive check) ...)
   (:commands (name id &key fields response generated timed) ...)"
   (let ((attributes (cdr (assoc :attributes sections)))
         (commands (cdr (assoc :commands sections))))
@@ -236,7 +242,10 @@ commands are responses, never accepted; TIMED ones need a timed interaction."
                                             :writable ,(getf options :writable)
                                             :default ,(getf options :default)
                                             :computed ,(getf options :computed)
-                                            :optional ,(getf options :optional))))
+                                            :optional ,(getf options :optional)
+                                            :fabric-scoped ,(getf options :fabric-scoped)
+                                            :fabric-sensitive ',(getf options :fabric-sensitive)
+                                            :check ,(getf options :check))))
        :commands (list ,@(loop :for (cname cid . options) :in commands
                                :collect `(make-command-definition
                                           :name ',cname :id ,cid
@@ -379,33 +388,81 @@ application's side, not the peer's."
     (%attribute-changed cluster (attribute-definition-id attribute))
     value))
 
-(defun read-attribute (cluster attribute-id)
-  "The attribute's value as an anonymous TLV-ELEMENT, for a report."
-  (let ((attribute (%attribute cluster attribute-id)))
-    (value-tlv (attribute-definition-type attribute) nil (attribute-value cluster attribute-id))))
+(defun %fabric-scoped-view (items fabric-index filtered sensitive)
+  "The entries of a fabric-scoped list as the fabric FABRIC-INDEX (0: none)
+reads them: only its own when FILTERED, else every entry with the SENSITIVE
+fields of the other fabrics' entries withheld."
+  (if filtered
+      (remove-if-not (lambda (item) (eql fabric-index (getf item :fabric-index))) items)
+      (mapcar (lambda (item)
+                (if (eql fabric-index (getf item :fabric-index))
+                    item
+                    (loop :for (key value) :on item :by #'cddr
+                          :unless (member key sensitive) :append (list key value))))
+              items)))
 
-(defun write-attribute (cluster attribute-id element &key list-index)
-  "A peer writes the TLV ELEMENT to the attribute.  LIST-INDEX :NULL appends
-to a list attribute, an index replaces one item.  Signals INTERACTION-ERROR
-with UNSUPPORTED_ATTRIBUTE, UNSUPPORTED_WRITE, INVALID_DATA_TYPE or
-CONSTRAINT_ERROR."
+(defun read-attribute (cluster attribute-id &key (fabric-index 0) fabric-filtered)
+  "The attribute's value as an anonymous TLV-ELEMENT, for a report to the
+fabric FABRIC-INDEX (0: a PASE session or local access); FABRIC-FILTERED
+is the read request's flag."
   (let* ((attribute (%attribute cluster attribute-id))
-         (type (resolve-type (attribute-definition-type attribute))))
+         (value (attribute-value cluster attribute-id)))
+    (when (attribute-definition-fabric-scoped attribute)
+      (setf value (%fabric-scoped-view value fabric-index fabric-filtered (attribute-definition-fabric-sensitive attribute))))
+    (value-tlv (attribute-definition-type attribute) nil value)))
+
+(defun %stamp-fabric (item fabric-index)
+  (let ((copy (copy-list item)))
+    (setf (getf copy :fabric-index) fabric-index)
+    copy))
+
+(defun %merge-fabric-items (old fabric-index new-own)
+  "OLD with the entries of FABRIC-INDEX replaced in place by NEW-OWN:
+surplus new ones go at the end, surplus old ones disappear."
+  (let ((remaining new-own) (out '()))
+    (dolist (item old)
+      (if (eql fabric-index (getf item :fabric-index))
+          (when remaining (push (pop remaining) out))
+          (push item out)))
+    (append (nreverse out) remaining)))
+
+(defun write-attribute (cluster attribute-id element &key list-index (fabric-index 0))
+  "A peer on the fabric FABRIC-INDEX (0: none) writes the TLV ELEMENT to the
+attribute.  LIST-INDEX :NULL appends to a list attribute, an index
+replaces one item.  A fabric-scoped list needs a fabric: the write
+replaces that fabric's entries only, each stamped with its index, and an
+index counts within them.  Signals INTERACTION-ERROR with
+UNSUPPORTED_ATTRIBUTE, UNSUPPORTED_WRITE, UNSUPPORTED_ACCESS,
+INVALID_DATA_TYPE or CONSTRAINT_ERROR, or what the attribute's CHECK
+signals."
+  (let* ((attribute (%attribute cluster attribute-id))
+         (type (resolve-type (attribute-definition-type attribute)))
+         (scoped (attribute-definition-fabric-scoped attribute)))
     (unless (and (attribute-definition-writable attribute) (not (attribute-definition-computed attribute)))
       (%im-fail :unsupported-write "~a of ~a is not writable" (attribute-definition-name attribute) cluster))
     (unless (attribute-present-p cluster attribute-id)
       (%im-fail :unsupported-attribute "~a does not have the optional attribute ~a"
                 cluster (attribute-definition-name attribute)))
-    (let ((value
-            (cond ((null list-index) (tlv-value type element))
-                  ((not (eq :list (%type-kind type)))
-                   (%im-fail :unsupported-write "~a of ~a is not a list" (attribute-definition-name attribute) cluster))
-                  (t (let ((item (tlv-value (second type) element))
-                           (old (attribute-value cluster attribute-id)))
-                       (cond ((eq list-index :null) (append old (list item)))
-                             ((< -1 list-index (length old))
-                              (let ((new (copy-list old))) (setf (nth list-index new) item) new))
-                             (t (%constraint "list index ~d is out of range (~d items)" list-index (length old)))))))))
+    (when (and scoped (not (plusp fabric-index)))
+      (%im-fail :unsupported-access "~a of ~a is fabric-scoped: no fabric on this session"
+                (attribute-definition-name attribute) cluster))
+    (let* ((old (attribute-value cluster attribute-id))
+           (own (if scoped (remove-if-not (lambda (item) (eql fabric-index (getf item :fabric-index))) old) old))
+           (new-own
+             (cond ((null list-index)
+                    (let ((value (tlv-value type element)))
+                      (if scoped (mapcar (lambda (item) (%stamp-fabric item fabric-index)) value) value)))
+                   ((not (eq :list (%type-kind type)))
+                    (%im-fail :unsupported-write "~a of ~a is not a list" (attribute-definition-name attribute) cluster))
+                   (t (let ((item (tlv-value (second type) element)))
+                        (when scoped (setf item (%stamp-fabric item fabric-index)))
+                        (cond ((eq list-index :null) (append own (list item)))
+                              ((< -1 list-index (length own))
+                               (let ((new (copy-list own))) (setf (nth list-index new) item) new))
+                              (t (%constraint "list index ~d is out of range (~d items)" list-index (length own))))))))
+           (value (if scoped (%merge-fabric-items old fabric-index new-own) new-own)))
+      (when (attribute-definition-check attribute)
+        (funcall (attribute-definition-check attribute) cluster value))
       (%store-attribute cluster attribute value)
       (%attribute-changed cluster (attribute-definition-id attribute))
       value)))

@@ -94,8 +94,12 @@
     (19 :matter-icac-id "1.3.6.1.4.1.37244.1.3" :u64)
     (20 :matter-rcac-id "1.3.6.1.4.1.37244.1.4" :u64)
     (21 :matter-fabric-id "1.3.6.1.4.1.37244.1.5" :u64)
-    (22 :matter-noc-cat "1.3.6.1.4.1.37244.1.6" :u32))
-  "The DN attribute types of section 6.5.6.1, by TLV tag number.")
+    (22 :matter-noc-cat "1.3.6.1.4.1.37244.1.6" :u32)
+    ;; the attestation attributes of section 6.2.2.2 have no TLV form: X.509 only
+    (nil :matter-vid "1.3.6.1.4.1.37244.2.1" :string)
+    (nil :matter-pid "1.3.6.1.4.1.37244.2.2" :string))
+  "The DN attribute types of section 6.5.6.1, by TLV tag number, and the
+two of the attestation certificates (X.509 only, TLV tag NIL).")
 
 (defparameter *key-usage-bits*
   '((:digital-signature . 0) (:non-repudiation . 1) (:key-encipherment . 2)
@@ -207,6 +211,7 @@
    tag :list
    (loop :for (type value . flags) :in dn
          :for entry := (%dn-type-entry type)
+         :do (unless (first entry) (%cert-fail "~s has no Matter TLV encoding" type))
          :collect (make-tlv-element (logior (first entry) (if (member :printable flags) +dn-printable-flag+ 0))
                                     (if (member (fourth entry) '(:u64 :u32)) :unsigned :string)
                                     value))))
@@ -270,7 +275,9 @@ per attribute, the Matter ids as 16 (CATs 8) uppercase hex digits."
   (public-key nil)                      ; 65 octets
   (extensions nil)                      ; in wire order, see the file header
   (signature nil)                       ; 64 octets r || s
-  (octets nil))                         ; the TLV encoding, once known
+  (octets nil)                          ; the TLV encoding, once known
+  (x509-der nil)                        ; the X.509 DER it was decoded from, if it was
+  (x509-tbs-der nil))                   ; that DER's TBSCertificate: what its signature is over
 
 (defmethod print-object ((c certificate) stream)
   (print-unreadable-object (c stream :type t)
@@ -555,7 +562,11 @@ type and range, and OCTETS are kept in the struct."
         (:future (first data))))))
 
 (defun certificate-tbs-der (certificate)
-  "The DER TBSCertificate: what the signature is over."
+  "The DER TBSCertificate: what the signature is over.  A certificate
+decoded from X.509 keeps the octets it came with; one made or decoded
+from TLV is re-encoded exactly as its signer did."
+  (when (certificate-x509-tbs-der certificate)
+    (return-from certificate-tbs-der (certificate-x509-tbs-der certificate)))
   (let ((c certificate))
     (%check-dn (certificate-issuer c) "the issuer")
     (%check-dn (certificate-subject c) "the subject")
@@ -583,7 +594,10 @@ type and range, and OCTETS are kept in the struct."
                 (der-unsigned-octets (subseq signature +p256-scalar-length+))))
 
 (defun certificate-der (certificate)
-  "The whole X.509 certificate in DER, as openssl or a TLS stack would read it."
+  "The whole X.509 certificate in DER, as openssl or a TLS stack would
+read it: the octets it was decoded from, or the encoding of its fields."
+  (when (certificate-x509-der certificate)
+    (return-from certificate-der (certificate-x509-der certificate)))
   (der-sequence (certificate-tbs-der certificate)
                 (der-sequence (der-oid *oid-ecdsa-with-sha256*))
                 (der-bit-string (ecdsa-signature-der (certificate-signature certificate)))))
@@ -601,11 +615,18 @@ or 65 octets)."
     (and (certificate-signature certificate)
          (p256-verify-digest public (certificate-tbs-digest certificate) (certificate-signature certificate)))))
 
-(defun sign-certificate (certificate private)
+(defun sign-certificate (certificate private &key (encode t))
   "Sign CERTIFICATE with PRIVATE (a P256-KEYPAIR, an integer or 32 octets):
-sets its signature, encodes it, and returns it."
+sets its signature, encodes it as TLV, and returns it.  With ENCODE NIL
+the certificate is X.509-only (an attestation certificate, whose subject
+has no TLV form): its DER is stored instead."
+  (setf (certificate-x509-der certificate) nil ; a stored X.509 form would carry the old signature
+        (certificate-x509-tbs-der certificate) nil)
   (setf (certificate-signature certificate) (p256-sign-digest private (certificate-tbs-digest certificate)))
-  (encode-certificate certificate)
+  (if encode
+      (encode-certificate certificate)
+      (setf (certificate-x509-tbs-der certificate) (certificate-tbs-der certificate)
+            (certificate-x509-der certificate) (certificate-der certificate)))
   certificate)
 
 (defun subject-key-identifier (public-key)
@@ -742,25 +763,27 @@ noc-public-key root-public-key); a failure is CERTIFICATE-ERROR."
              (if (logbitp 7 (aref octets 0)) (%concat-octets (vector 0) octets) octets)))))
 
 (defun %make-signed-certificate (&key subject issuer public-key signer serial-number not-before not-after
-                                   extensions)
+                                   extensions x509)
   (let ((c (make-certificate :serial-number (%serial-number serial-number)
                              :issuer issuer :subject subject
                              :not-before not-before :not-after not-after
                              :public-key public-key
                              :extensions extensions)))
     (certificate-type c)                ; a malformed subject fails here, not at the peer
-    (sign-certificate c signer)))
+    (sign-certificate c signer :encode (not x509))))
 
 (defun make-root-certificate (&key keypair rcac-id fabric-id serial-number
-                                (not-before (matter-time)) (not-after 0) subject)
+                                (not-before (matter-time)) (not-after 0) subject x509)
   "A self-signed RCAC for KEYPAIR with subject matter-rcac-id RCAC-ID (default
 1) and, if given, matter-fabric-id FABRIC-ID; SUBJECT replaces that default
-subject.  NOT-AFTER 0 means never."
+subject.  NOT-AFTER 0 means never.  X509 makes an X.509-only certificate
+(a PAA: its subject has no TLV form)."
   (let* ((subject (or subject
                       (append (list (list :matter-rcac-id (or rcac-id 1)))
                               (when fabric-id (list (list :matter-fabric-id fabric-id))))))
          (key-id (subject-key-identifier (p256-keypair-public keypair))))
     (%make-signed-certificate
+     :x509 x509
      :subject subject :issuer subject
      :public-key (p256-keypair-public keypair) :signer keypair
      :serial-number serial-number :not-before not-before :not-after not-after
@@ -770,12 +793,13 @@ subject.  NOT-AFTER 0 means never."
                        (list :authority-key-id key-id)))))
 
 (defun make-ica-certificate (&key keypair icac-id fabric-id issuer issuer-keypair serial-number
-                               (not-before (matter-time)) (not-after 0) subject)
+                               (not-before (matter-time)) (not-after 0) subject x509)
   "An ICAC for KEYPAIR signed by the ISSUER certificate's ISSUER-KEYPAIR."
   (let ((subject (or subject
                      (append (list (list :matter-icac-id (or icac-id 1)))
                              (when fabric-id (list (list :matter-fabric-id fabric-id)))))))
     (%make-signed-certificate
+     :x509 x509
      :subject subject :issuer (certificate-subject issuer)
      :public-key (p256-keypair-public keypair) :signer issuer-keypair
      :serial-number serial-number :not-before not-before :not-after not-after
@@ -785,7 +809,7 @@ subject.  NOT-AFTER 0 means never."
                        (list :authority-key-id (certificate-subject-key-id issuer))))))
 
 (defun make-node-certificate (&key public-key node-id fabric-id case-auth-tags issuer issuer-keypair
-                                serial-number (not-before (matter-time)) (not-after 0) subject)
+                                serial-number (not-before (matter-time)) (not-after 0) subject x509)
   "A NOC for PUBLIC-KEY (65 octets, or a P256-KEYPAIR) and NODE-ID on
 FABRIC-ID, with the CASE-AUTH-TAGS, signed by the ISSUER certificate's
 ISSUER-KEYPAIR (an RCAC or ICAC)."
@@ -794,6 +818,7 @@ ISSUER-KEYPAIR (an RCAC or ICAC)."
                      (append (list (list :matter-node-id node-id) (list :matter-fabric-id fabric-id))
                              (mapcar (lambda (cat) (list :matter-noc-cat cat)) case-auth-tags)))))
     (%make-signed-certificate
+     :x509 x509
      :subject subject :issuer (certificate-subject issuer)
      :public-key public-key :signer issuer-keypair
      :serial-number serial-number :not-before not-before :not-after not-after
@@ -802,3 +827,242 @@ ISSUER-KEYPAIR (an RCAC or ICAC)."
                        '(:extended-key-usage :client-auth :server-auth)
                        (list :subject-key-id (subject-key-identifier public-key))
                        (list :authority-key-id (certificate-subject-key-id issuer))))))
+
+;;; ------------------------------------------------------------------
+;;; X.509 import (RFC 5280 over der.lisp): the attestation certificates
+;;; of section 6.2.2, PAA roots, and anything else that arrives as DER
+;;; rather than Matter TLV.  The decoded certificate keeps its DER and its
+;;; TBSCertificate, so its signature verifies over the original octets
+;;; and CERTIFICATE-DER gives them back unchanged.
+
+(defparameter *oid-dn-types*
+  (loop :for entry :in *dn-attribute-types* :collect (cons (third entry) entry))
+  "DN attribute entries by OID, for the X.509 direction.")
+
+(defun %der-dn (node what)
+  "An X.509 Name NODE as our DN list.  An attribute whose type we do not
+know becomes ((:OID \"1.2...\") VALUE) and cannot be re-encoded."
+  (loop :for rdn :in (der-children node +der-sequence+ what)
+        :append (loop :for attribute :in (der-children rdn +der-set+ (format nil "~a's RDN" what))
+                      :collect (let* ((parts (der-children attribute +der-sequence+ (format nil "~a's attribute" what)))
+                                      (oid (der-node-oid (first parts)))
+                                      (value (second parts))
+                                      (entry (cdr (assoc oid *oid-dn-types* :test #'string=))))
+                                 (unless value (%cert-fail "~a: an attribute without a value" what))
+                                 (cond ((null entry)
+                                        (list (list :oid oid)
+                                              (if (member (der-node-tag value)
+                                                          (list +der-utf8-string+ +der-printable-string+ +der-ia5-string+))
+                                                  (der-node-string value)
+                                                  (der-node-content value))))
+                                       ((member (fourth entry) '(:u64 :u32))
+                                        (multiple-value-bind (string kind) (der-node-string value)
+                                          (declare (ignore kind))
+                                          (let ((digits (if (eq :u64 (fourth entry)) 16 8)))
+                                            (unless (and (= (length string) digits)
+                                                         (every (lambda (c) (digit-char-p c 16)) string))
+                                              (%cert-fail "~a: ~s is not ~d hex digits: ~s" what (second entry) digits string))
+                                            (list (second entry) (parse-integer string :radix 16)))))
+                                       (t (multiple-value-bind (string kind) (der-node-string value)
+                                            (if (eq kind :printable)
+                                                (list (second entry) string :printable)
+                                                (list (second entry) string)))))))))
+
+(defun %der-extension (node)
+  "An X.509 Extension NODE as our extension form; unknown ones are kept as (:future DER)."
+  (let* ((parts (der-children node +der-sequence+ "an extension"))
+         (oid (der-node-oid (first parts)))
+         (value (der-node-octet-string (car (last parts)))))
+    (unless (<= 2 (length parts) 3) (%cert-fail "an extension with ~d members" (length parts)))
+    (cond ((string= oid *oid-basic-constraints*)
+           (let* ((members (der-children (der-decode value) +der-sequence+ "basic constraints"))
+                  (ca-node (and (first members) (= +der-boolean+ (der-node-tag (first members))) (first members)))
+                  (path-node (find +der-integer+ members :key #'der-node-tag)))
+             (append (list :basic-constraints :ca (and ca-node (der-node-boolean ca-node)))
+                     (when path-node (list :path-length (der-node-integer path-node))))))
+          ((string= oid *oid-key-usage*)
+           (cons :key-usage (%key-usage-keywords (der-node-bit-string-flags (der-decode value)))))
+          ((string= oid *oid-extended-key-usage*)
+           (cons :extended-key-usage
+                 (mapcar (lambda (purpose)
+                           (let ((oid (der-node-oid purpose)))
+                             (or (second (find oid *key-purposes* :key #'third :test #'string=))
+                                 (%cert-fail "unknown key purpose ~a" oid))))
+                         (der-children (der-decode value) +der-sequence+ "extended key usage"))))
+          ((string= oid *oid-subject-key-id*)
+           (list :subject-key-id (der-node-octet-string (der-decode value))))
+          ((string= oid *oid-authority-key-id*)
+           (let* ((members (der-children (der-decode value) +der-sequence+ "authority key id"))
+                  (key-id (find (der-context-tag 0 nil) members :key #'der-node-tag)))
+             (unless key-id (%cert-fail "an authority key id without the key identifier"))
+             (list :authority-key-id (der-node-content key-id))))
+          (t (list :future (der-node-whole node))))))
+
+(defun ecdsa-signature-from-der (octets)
+  "The 64-octet r || s of a DER Ecdsa-Sig-Value."
+  (let ((parts (der-children (der-decode octets) +der-sequence+ "the ECDSA signature")))
+    (unless (= 2 (length parts)) (%cert-fail "an ECDSA signature with ~d integers" (length parts)))
+    (flet ((scalar (node)
+             (let ((n (der-node-integer node)))
+               (unless (<= 0 n (1- (ash 1 256))) (%cert-fail "an ECDSA signature integer out of range"))
+               (%integer-octets n +p256-scalar-length+))))
+      (%concat-octets (scalar (first parts)) (scalar (second parts))))))
+
+(defun %der-subject-public-key (node what)
+  "The 65 octets of an id-ecPublicKey / prime256v1 SubjectPublicKeyInfo."
+  (let* ((parts (der-children node +der-sequence+ what))
+         (algorithm (der-children (first parts) +der-sequence+ (format nil "~a's algorithm" what))))
+    (unless (and (= 2 (length parts)) (= 2 (length algorithm)))
+      (%cert-fail "~a is not an EC SubjectPublicKeyInfo" what))
+    (unless (string= *oid-ec-public-key* (der-node-oid (first algorithm)))
+      (%cert-fail "~a: unsupported public key algorithm ~a" what (der-node-oid (first algorithm))))
+    (unless (string= *oid-prime256v1* (der-node-oid (second algorithm)))
+      (%cert-fail "~a: unsupported curve ~a" what (der-node-oid (second algorithm))))
+    (let ((key (der-node-bit-string (second parts))))
+      (unless (= (length key) +p256-point-length+)
+        (%cert-fail "~a: a public key of ~d octets" what (length key)))
+      (unless (p256-point-p key) (%cert-fail "~a: the public key is not a point on P-256" what))
+      key)))
+
+(defun decode-certificate-der (octets)
+  "The CERTIFICATE in the X.509 DER OCTETS.  Only the Matter profile is
+accepted: version 3, ecdsa-with-SHA256, a P-256 key.  The DER and its
+TBSCertificate stay with the certificate."
+  (handler-case
+      (let* ((octets (%check-octet-vector "the certificate" octets))
+             (top (der-children (der-decode octets) +der-sequence+ "the certificate"))
+             (tbs (first top))
+             (members (der-children tbs +der-sequence+ "the TBSCertificate"))
+             (version (der-optional-child tbs 0 (der-context-tag 0))))
+        (unless (= 3 (length top)) (%cert-fail "a certificate has three members, got ~d" (length top)))
+        (unless version (%cert-fail "the certificate is not version 3 (no version member)"))
+        (unless (= 2 (der-node-integer (der-child version 0 +der-integer+ "the version")))
+          (%cert-fail "unsupported certificate version ~d" (1+ (der-node-integer (der-child version 0)))))
+        (pop members)
+        (when (< (length members) 7) (%cert-fail "a TBSCertificate with ~d members" (1+ (length members))))
+        (destructuring-bind (serial algorithm issuer validity subject spki &rest rest) members
+          (let ((algorithm-oid (der-node-oid (der-child algorithm 0 +der-oid+ "the signature algorithm")))
+                (outer-algorithm (der-node-oid (der-child (second top) 0 +der-oid+ "the signature algorithm")))
+                (extensions (find (der-context-tag 3) rest :key #'der-node-tag)))
+            (unless (string= algorithm-oid *oid-ecdsa-with-sha256*)
+              (%cert-fail "unsupported signature algorithm ~a" algorithm-oid))
+            (unless (string= outer-algorithm algorithm-oid)
+              (%cert-fail "the signature algorithms inside and outside the TBSCertificate differ"))
+            (let* ((times (der-children validity +der-sequence+ "the validity"))
+                   (c (make-certificate
+                       :serial-number (der-node-unsigned-octets serial)
+                       :issuer (%der-dn issuer "the issuer")
+                       :not-before (der-node-time (first times))
+                       :not-after (der-node-time (second times))
+                       :subject (%der-dn subject "the subject")
+                       :public-key (%der-subject-public-key spki "the subject public key")
+                       :extensions (and extensions
+                                        (mapcar #'%der-extension
+                                                (der-children (der-child extensions 0 +der-sequence+ "the extensions")
+                                                              +der-sequence+ "the extensions")))
+                       :signature (ecdsa-signature-from-der (der-node-bit-string (third top)))
+                       :x509-der octets
+                       :x509-tbs-der (der-node-whole tbs))))
+              (unless (= 2 (length times)) (%cert-fail "a validity with ~d times" (length times)))
+              (unless (plusp (length (certificate-serial-number c))) (%cert-fail "the serial number is empty"))
+              (unless (or (zerop (certificate-not-after c)) (<= (certificate-not-before c) (certificate-not-after c)))
+                (%cert-fail "notBefore is after notAfter"))
+              (let ((kinds (mapcar #'first (certificate-extensions c))))
+                (unless (= (length (remove :future kinds)) (length (remove-duplicates (remove :future kinds))))
+                  (%cert-fail "an extension appears twice")))
+              c))))
+    (der-error (e) (%cert-fail "malformed X.509: ~a" (der-error-message e)))
+    (crypto-error (e) (%cert-fail "~a" (crypto-error-message e)))))
+
+(defun decode-certificate-pem (string)
+  "The CERTIFICATE in the first CERTIFICATE block of PEM STRING."
+  (decode-certificate-der (handler-case (pem-block string "CERTIFICATE")
+                            (der-error (e) (%cert-fail "~a" (der-error-message e))))))
+
+(defun certificate-from-octets (octets)
+  "A CERTIFICATE from OCTETS in either form: Matter TLV (an anonymous
+structure, first octet #x15) or X.509 DER (a SEQUENCE, #x30)."
+  (let ((octets (%check-octet-vector "the certificate" octets)))
+    (cond ((zerop (length octets)) (%cert-fail "the certificate is empty"))
+          ((= #x30 (aref octets 0)) (decode-certificate-der octets))
+          (t (decode-certificate octets)))))
+
+;;; The vendor and product id of an attestation certificate (section
+;;; 6.2.2.2): the Matter DN attributes, or the fallback "Mvid:FFF1" /
+;;; "Mpid:8000" inside a string attribute.
+
+(defun %dn-hex-id (dn type marker what)
+  (let ((values (dn-attributes dn type)))
+    (when (> (length values) 1) (%cert-fail "~a appears ~d times in the subject" what (length values)))
+    (if values
+        (let ((string (first values)))
+          (unless (and (= 4 (length string)) (every (lambda (c) (digit-char-p c 16)) string))
+            (%cert-fail "~a ~s is not 4 hex digits" what string))
+          (parse-integer string :radix 16))
+        (loop :for attribute :in dn
+              :for value := (second attribute)
+              :for start := (and (stringp value) (search marker value))
+              :when (and start (<= (+ start (length marker) 4) (length value))
+                         (every (lambda (c) (digit-char-p c 16))
+                                (subseq value (+ start (length marker)) (+ start (length marker) 4))))
+                :return (parse-integer value :start (+ start (length marker)) :end (+ start (length marker) 4) :radix 16)))))
+
+(defun certificate-vendor-id (certificate)
+  "The vendor id of an attestation certificate's subject, or NIL."
+  (%dn-hex-id (certificate-subject certificate) :matter-vid "Mvid:" "the vendor id"))
+
+(defun certificate-product-id (certificate)
+  "The product id of an attestation certificate's subject, or NIL."
+  (%dn-hex-id (certificate-subject certificate) :matter-pid "Mpid:" "the product id"))
+
+;;; EC private keys as openssl writes them
+
+(defparameter *oid-pkcs8-ec-key* *oid-ec-public-key*)
+
+(defun decode-ec-private-key (octets)
+  "The P256-KEYPAIR in OCTETS: a SEC 1 ECPrivateKey (an \"EC PRIVATE KEY\"
+PEM block) or a PKCS#8 PrivateKeyInfo wrapping one (\"PRIVATE KEY\")."
+  (handler-case
+      (let* ((octets (%check-octet-vector "the private key" octets))
+             (members (der-children (der-decode octets) +der-sequence+ "the private key")))
+        (when (and (>= (length members) 3) (= +der-sequence+ (der-node-tag (second members))))
+          ;; PKCS#8: version, algorithm, OCTET STRING holding the SEC 1 key
+          (let ((algorithm (der-children (second members) +der-sequence+ "the key algorithm")))
+            (unless (string= *oid-pkcs8-ec-key* (der-node-oid (first algorithm)))
+              (%cert-fail "unsupported private key algorithm ~a" (der-node-oid (first algorithm))))
+            (when (and (second algorithm) (= +der-oid+ (der-node-tag (second algorithm)))
+                       (not (string= *oid-prime256v1* (der-node-oid (second algorithm)))))
+              (%cert-fail "unsupported curve ~a" (der-node-oid (second algorithm)))))
+          (setf members (der-children (der-decode (der-node-octet-string (third members)))
+                                      +der-sequence+ "the EC private key")))
+        (unless (and (>= (length members) 2) (= 1 (der-node-integer (first members))))
+          (%cert-fail "not a version 1 ECPrivateKey"))
+        (let ((private (der-node-octet-string (second members)))
+              (parameters (find (der-context-tag 0) members :key #'der-node-tag))
+              (public (find (der-context-tag 1) members :key #'der-node-tag)))
+          (when parameters
+            (let ((curve (der-node-oid (der-child parameters 0 +der-oid+ "the curve"))))
+              (unless (string= curve *oid-prime256v1*) (%cert-fail "unsupported curve ~a" curve))))
+          (let ((keypair (make-p256-keypair private)))
+            (when public
+              (unless (equalp (p256-keypair-public keypair)
+                              (der-node-bit-string (der-child public 0 +der-bit-string+ "the public key")))
+                (%cert-fail "the public key in the file is not the private key's")))
+            keypair)))
+    (der-error (e) (%cert-fail "malformed private key: ~a" (der-error-message e)))
+    (crypto-error (e) (%cert-fail "~a" (crypto-error-message e)))))
+
+(defun decode-ec-private-key-pem (string)
+  "The P256-KEYPAIR of the first EC PRIVATE KEY or PRIVATE KEY block of PEM STRING."
+  (let ((blocks (handler-case (pem-decode string) (der-error (e) (%cert-fail "~a" (der-error-message e))))))
+    (let ((block (or (assoc "EC PRIVATE KEY" blocks :test #'string=)
+                     (assoc "PRIVATE KEY" blocks :test #'string=))))
+      (unless block (%cert-fail "no private key block in the PEM text"))
+      (decode-ec-private-key (cdr block)))))
+
+(defun encode-ec-private-key (keypair)
+  "KEYPAIR as a SEC 1 ECPrivateKey in DER, as openssl's EC PRIVATE KEY."
+  (der-sequence (der-integer 1)
+                (der-octet-string (p256-keypair-private keypair))
+                (der-context 0 t (der-oid *oid-prime256v1*))
+                (der-context 1 t (der-bit-string (p256-keypair-public keypair)))))

@@ -6,7 +6,7 @@ Matter (the CSA smart-home standard) for Common Lisp, built bottom-up:
 |---|---|
 | `cl-matter/net` | Unconnected UDP sockets, multicast, interface list — one protocol, one backend per implementation (AmiLisp on `EXT`, SBCL on `sb-bsd-sockets`) |
 | `cl-matter/dns-sd` | mDNS (RFC 6762) and DNS-SD (RFC 6763): DNS message codec, resolver, service browser, responder |
-| `cl-matter` | Matter core: TLV codec, message framing, PASE/CASE sessions, interaction model |
+| `cl-matter` | Matter core: TLV codec, message framing, PASE/CASE sessions, interaction model, commissioning |
 | `cl-matter/tests` | fiveam suite over all of the above |
 
 The discovery layer works on IPv4 and IPv6 and therefore on AmigaOS and
@@ -85,7 +85,28 @@ per-path statuses, chunked reports, data version filters, timed requests,
 and subscriptions that report changes after the minimum interval and keep
 alive at the maximum, in both directions. `test/data-model-test.lisp` and
 `test/interaction-test.lisp` cover it, the last one with a server thread
-over UDP after a PASE handshake.
+over UDP after a PASE handshake. Commissioning is in: X.509 DER is read as
+well as written (`src/matter/der.lisp`, with base64 and PEM), so device
+attestation certificates and PAA roots import into the same `certificate`
+struct (`decode-certificate-der`, `decode-certificate-pem`, EC private keys
+from PEM); `src/matter/attestation.lisp` has the attestation and NOCSR
+elements, the DAC-signed attestation signature, PKCS#10 certificate
+signing requests, the certification declaration in its CMS envelope
+(signed by the CSA's keys or the SDK's test key), the PAA trust store, and
+`verify-device-attestation` / `verify-nocsr`, the commissioner's checks of
+section 6.2.3, verified against the Matter SDK's vectors
+(`test/sdk-attestation.lisp`, `test/attestation-test.lisp`);
+`src/matter/commissioning.lisp` defines General Commissioning,
+Operational Credentials, Network Commissioning (Ethernet) and Access
+Control, a `device` that serves them from a fabric table with the
+fail-safe and its reverts, and a `commissioner` that runs the flow of
+section 5.5 over PASE: arm the fail-safe, regulatory configuration,
+attestation, CSR, root and NOC, CASE as the new administrator,
+CommissioningComplete. Attributes can be fabric-scoped (`define-cluster`'s
+`:fabric-scoped` and `:fabric-sensitive`): the NOCs, Fabrics and ACL
+lists show each fabric its own entries. `test/commissioning-test.lisp`
+runs the flow on the in-memory rig and over UDP, drives every cluster
+command by hand, and lets fail-safes expire.
 
 ```lisp
 ;; the commissionee stores a verifier, never the passcode
@@ -157,6 +178,21 @@ over UDP after a PASE handshake.
 ```
 
 ```lisp
+;; a commissionable device: the node from above, its Secure Channel and Interaction Model
+(defvar *device* (cl-matter:make-device :node *node* :channel *sc* :model *im*
+                                        :credentials (cl-matter:test-attestation-credentials) ; the SDK's example DAC
+                                        :passcode 20202021 :salt salt :iterations 1000        ; opens the window
+                                        :on-commissioned (lambda (device fabric) ...)))
+(cl-matter:device-fabrics *device*)                    ; the fabric table, FABRICs with their indices
+;; a commissioner: its own fabric, rooted here
+(defvar *admin* (cl-matter:make-commissioner *m-sc* *m-im* :fabric-id 1 :vendor-id #xFFF1))
+(cl-matter:commission *admin* "fe80::1%en0" 5540 :passcode 20202021 :country-code "DE")
+;; => (:node-id 2 :fabric #<FABRIC> :session #<SESSION CASE ...> :attestation (...) ...)
+;; START-COMMISSIONING is the non-blocking form; :attestation :ignore skips the trust store
+;; for development devices (the signature must still be the DAC's)
+```
+
+```lisp
 (dns-sd:browse "_http._tcp")
 ;; => ("Printer._http._tcp.local" ...), <all records received>
 (dns-sd:resolve "Printer._http._tcp.local")
@@ -192,23 +228,24 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   thread wrapper yet, no TCP transport, no message-counter
   synchronisation for group messages, and sessions never expire on their
   own.
-- **Certificates**: X.509 DER is only written, never read, so a
-  certificate must arrive in Matter TLV form (as it does on the wire);
-  there is no PEM/DER import, no CSR, and no device attestation
-  certificates (PAI/DAC) or certification declarations.
+- **Certificates**: the PAA trust store starts with the SDK's test PAAs
+  only; the CSA's production roots (the Distributed Compliance Ledger)
+  must be added with `add-trusted-paa`. Revocation is not checked.
 - **Message privacy** (the P flag, privacy keys): not implemented; group
   messages and group keys likewise.
 - **Interaction model**: events are accepted in requests and never
-  reported; there is no access control (any session may do what the
-  definitions allow), no fabric-scoped data, no list chunking (an
-  attribute too big for one message is reported RESOURCE_EXHAUSTED) and
-  no group writes or invokes. Only Descriptor, Basic Information, Identify
-  and On/Off are defined; the commissioning clusters (General
-  Commissioning, Operational Credentials, Network Commissioning, Access
-  Control) are not, so no commissioning flow beyond the PASE session yet.
-- **Commissioning**: no device attestation, no CSR exchange, no fabric
-  provisioning; the commissionable-node mDNS advertisement is possible
-  with the responder, but the `_matterc._udp` TXT keys are not generated.
+  reported; the ACL is kept and checked but not enforced (any session may
+  do what the definitions allow); no list chunking (an attribute too big
+  for one message is reported RESOURCE_EXHAUSTED) and no group writes or
+  invokes. Beyond the commissioning clusters only Descriptor, Basic
+  Information, Identify and On/Off are defined.
+- **Commissioning**: the fabric table lives in memory (the application
+  keeps and restores `device-fabrics`); there is no Administrator
+  Commissioning cluster (a window opened by an existing admin), the
+  Network Commissioning cluster is Ethernet only (no Wi-Fi or Thread
+  configuration), and the commissionable-node mDNS advertisement is
+  possible with the responder but the `_matterc._udp` TXT keys are not
+  generated.
 - **SBCL backend**: multicast membership and interface enumeration are
   still missing, so on SBCL the querier uses legacy unicast and the
   responder cannot run.
@@ -232,4 +269,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. Then the commissioning pieces: CSR, device attestation, DER import and the commissioning clusters, towards an interop test against chip-tool.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. Next: the commissionable-node advertisement and an interop test against chip-tool.

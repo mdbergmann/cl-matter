@@ -165,6 +165,12 @@ decides which direction we encrypt in.  A :CASE session has node ids; a
     (setf (session-retransmissions session) (%make-retransmissions session))
     session))
 
+(defun session-fabric-index (session)
+  "The index of the fabric SESSION is on in this node's fabric table: a
+CASE session's, a PASE session's once AddNOC put it on one, else 0."
+  (let ((fabric (and session (session-fabric session))))
+    (if fabric (fabric-index fabric) 0)))
+
 (defun session-attestation-challenge (session)
   "The attestation challenge of a secured session's keys, or NIL."
   (and (session-keys session) (session-keys-attestation-challenge (session-keys session))))

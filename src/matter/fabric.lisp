@@ -82,13 +82,14 @@ derived from them.  OPERATIONAL-KEYPAIR is the key pair the NOC certifies."
   (epoch-key nil :read-only t)          ; the IPK epoch key, 16 octets
   (ipk nil :read-only t)                ; the operational IPK, 16 octets
   (vendor-id 0)
-  (label ""))
+  (label "")
+  (index 0))                            ; its place in a node's fabric table, 1..254; 0 when in none
 
 (defmethod print-object ((f fabric) stream)
   (print-unreadable-object (f stream :type t)
     (format stream "~16,'0x node ~16,'0x" (fabric-fabric-id f) (fabric-node-id f))))
 
-(defun make-fabric (&key rcac icac noc operational-keypair epoch-key (vendor-id 0) (label "") time)
+(defun make-fabric (&key rcac icac noc operational-keypair epoch-key (vendor-id 0) (label "") time (index 0))
   "A fabric from the credentials NOC, ICAC (optional) and RCAC (certificates
 or TLV octets), the OPERATIONAL-KEYPAIR the NOC certifies, and the IPK
 EPOCH-KEY (16 octets) the fabric's key set holds at epoch 0.  The chain is
@@ -110,7 +111,7 @@ CERTIFICATE-ERROR."
                       :compressed-fabric-id compressed
                       :epoch-key epoch-key
                       :ipk (operational-group-key epoch-key compressed)
-                      :vendor-id vendor-id :label label)))))
+                      :vendor-id vendor-id :label label :index index)))))
 
 (defun fabric-operational-instance-name (fabric &optional (node-id (fabric-node-id fabric)))
   "The DNS-SD instance name of NODE-ID on FABRIC: <compressed fabric id>-<node id>,
