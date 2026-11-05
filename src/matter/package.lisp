@@ -639,4 +639,122 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:handshake-wait
    #:establish-pase-session
    #:establish-case-session
-   #:close-session))
+   #:close-session
+   ;; timers (exchange.lisp)
+   #:add-timer
+   #:wake-timer
+   #:remove-timer
+   #:exchange-manager-timers
+   ;; Interaction Model codec (interaction-codec.lisp)
+   #:*interaction-model-revision*
+   #:+im-status-success+ #:+im-status-failure+ #:+im-status-invalid-subscription+
+   #:+im-status-unsupported-access+ #:+im-status-unsupported-endpoint+ #:+im-status-invalid-action+
+   #:+im-status-unsupported-command+ #:+im-status-invalid-command+ #:+im-status-unsupported-attribute+
+   #:+im-status-constraint-error+ #:+im-status-unsupported-write+ #:+im-status-resource-exhausted+
+   #:+im-status-not-found+ #:+im-status-unreportable-attribute+ #:+im-status-invalid-data-type+
+   #:+im-status-unsupported-read+ #:+im-status-data-version-mismatch+ #:+im-status-timeout+
+   #:+im-status-unsupported-node+ #:+im-status-busy+ #:+im-status-access-restricted+
+   #:+im-status-unsupported-cluster+ #:+im-status-no-upstream-subscription+
+   #:+im-status-needs-timed-interaction+ #:+im-status-unsupported-event+ #:+im-status-paths-exhausted+
+   #:+im-status-timed-request-mismatch+ #:+im-status-failsafe-required+ #:+im-status-invalid-in-state+
+   #:+im-status-no-command-response+
+   #:im-status-name #:im-status-code
+   #:interaction-error #:interaction-error-message #:interaction-error-status #:interaction-error-cluster-status
+   #:attribute-path #:make-attribute-path #:attribute-path-p #:attribute-path-node #:attribute-path-endpoint
+   #:attribute-path-cluster #:attribute-path-attribute #:attribute-path-list-index #:attribute-path-tag-compression
+   #:attribute-path-concrete-p #:attribute-path-matches-p #:attribute-path-tlv #:tlv-attribute-path
+   #:cluster-path-tlv #:tlv-cluster-path #:command-path-tlv #:tlv-command-path #:event-path-tlv #:tlv-event-path
+   #:im-status-tlv #:tlv-im-status #:attribute-report-tlv #:tlv-attribute-report
+   #:cluster-path #:make-cluster-path #:cluster-path-p #:cluster-path-node #:cluster-path-endpoint #:cluster-path-cluster
+   #:command-path #:make-command-path #:command-path-p #:command-path-endpoint #:command-path-cluster #:command-path-command
+   #:event-path #:make-event-path #:event-path-p #:event-path-node #:event-path-endpoint #:event-path-cluster
+   #:event-path-event #:event-path-urgent
+   #:im-status #:make-im-status #:im-status-p #:im-status-status #:im-status-cluster-status #:im-status-success-p
+   #:attribute-data #:make-attribute-data #:attribute-data-p #:attribute-data-data-version #:attribute-data-path
+   #:attribute-data-data
+   #:attribute-status #:make-attribute-status #:attribute-status-p #:attribute-status-path #:attribute-status-status
+   #:attribute-report #:make-attribute-report #:attribute-report-p #:attribute-report-status #:attribute-report-data
+   #:attribute-report-path
+   #:data-version-filter #:make-data-version-filter #:data-version-filter-p #:data-version-filter-path
+   #:data-version-filter-data-version
+   #:event-filter #:make-event-filter #:event-filter-p #:event-filter-node #:event-filter-event-min
+   #:event-data #:make-event-data #:event-data-p #:event-data-path #:event-data-event-number #:event-data-priority
+   #:event-data-epoch-timestamp #:event-data-system-timestamp #:event-data-delta-epoch-timestamp
+   #:event-data-delta-system-timestamp #:event-data-data
+   #:event-status #:make-event-status #:event-status-p #:event-status-path #:event-status-status
+   #:event-report #:make-event-report #:event-report-p #:event-report-status #:event-report-data
+   #:command-data #:make-command-data #:command-data-p #:command-data-path #:command-data-fields #:command-data-ref
+   #:command-status #:make-command-status #:command-status-p #:command-status-path #:command-status-status
+   #:command-status-ref
+   #:invoke-response #:make-invoke-response #:invoke-response-p #:invoke-response-command #:invoke-response-status
+   #:invoke-response-path
+   #:status-response #:make-status-response #:status-response-p #:status-response-status
+   #:read-request #:make-read-request #:read-request-p #:read-request-attribute-requests #:read-request-event-requests
+   #:read-request-event-filters #:read-request-fabric-filtered #:read-request-data-version-filters
+   #:report-data #:make-report-data #:report-data-p #:report-data-subscription-id #:report-data-attribute-reports
+   #:report-data-event-reports #:report-data-more-chunked-messages #:report-data-suppress-response
+   #:subscribe-request #:make-subscribe-request #:subscribe-request-p #:subscribe-request-keep-subscriptions
+   #:subscribe-request-min-interval-floor #:subscribe-request-max-interval-ceiling
+   #:subscribe-request-attribute-requests #:subscribe-request-event-requests #:subscribe-request-event-filters
+   #:subscribe-request-fabric-filtered #:subscribe-request-data-version-filters
+   #:subscribe-response #:make-subscribe-response #:subscribe-response-p #:subscribe-response-subscription-id
+   #:subscribe-response-max-interval
+   #:write-request #:make-write-request #:write-request-p #:write-request-suppress-response
+   #:write-request-timed-request #:write-request-write-requests #:write-request-more-chunked-messages
+   #:write-response #:make-write-response #:write-response-p #:write-response-write-responses
+   #:invoke-request #:make-invoke-request #:invoke-request-p #:invoke-request-suppress-response
+   #:invoke-request-timed-request #:invoke-request-invoke-requests
+   #:invoke-response-message #:make-invoke-response-message #:invoke-response-message-p
+   #:invoke-response-message-suppress-response #:invoke-response-message-invoke-responses
+   #:invoke-response-message-more-chunked-messages
+   #:timed-request #:make-timed-request #:timed-request-p #:timed-request-timeout
+   #:encode-interaction-message #:decode-interaction-message
+   ;; data model (data-model.lisp)
+   #:*interaction-session* #:*type-aliases* #:resolve-type #:value-tlv #:tlv-value
+   #:attribute-definition #:make-attribute-definition #:attribute-definition-p #:attribute-definition-name
+   #:attribute-definition-id #:attribute-definition-type #:attribute-definition-writable
+   #:attribute-definition-default #:attribute-definition-computed #:attribute-definition-optional
+   #:command-definition #:make-command-definition #:command-definition-p #:command-definition-name
+   #:command-definition-id #:command-definition-fields #:command-definition-response
+   #:command-definition-generated #:command-definition-timed
+   #:cluster-definition #:make-cluster-definition #:cluster-definition-p #:cluster-definition-name
+   #:cluster-definition-id #:cluster-definition-revision #:cluster-definition-attributes
+   #:cluster-definition-commands
+   #:register-cluster-definition #:find-cluster-definition #:find-attribute-definition #:find-command-definition
+   #:define-cluster
+   #:+attribute-cluster-revision+ #:+attribute-feature-map+ #:+attribute-attribute-list+
+   #:+attribute-accepted-command-list+ #:+attribute-generated-command-list+
+   #:global-attribute-p #:*global-attribute-definitions*
+   #:cluster #:cluster-p #:make-cluster #:cluster-endpoint #:cluster-data-version #:cluster-feature-map
+   #:cluster-handlers #:cluster-id #:cluster-name #:cluster-revision
+   #:attribute-present-p #:cluster-attribute-ids #:cluster-accepted-command-ids #:cluster-generated-command-ids
+   #:attribute-value #:read-attribute #:write-attribute #:command-handler #:invoke-cluster-command
+   #:endpoint #:endpoint-p #:make-endpoint #:endpoint-id #:endpoint-device-types #:endpoint-clusters #:endpoint-node
+   #:add-cluster #:find-cluster
+   #:node #:node-p #:make-node #:node-endpoints #:node-listeners
+   #:add-endpoint #:find-endpoint #:node-cluster #:add-node-listener #:remove-node-listener
+   ;; clusters (clusters.lisp)
+   #:+cluster-descriptor+ #:+cluster-basic-information+ #:+cluster-identify+ #:+cluster-on-off+
+   #:+endpoint-root+ #:+device-type-root-node+ #:+device-type-on-off-light+
+   #:+device-type-on-off-plug-in-unit+ #:+device-type-on-off-light-switch+
+   #:+data-model-revision+ #:+specification-version+
+   #:make-identify-cluster #:make-on-off-cluster #:make-basic-node
+   ;; the Interaction Model over exchanges (interaction.lisp)
+   #:*interaction-timeout* #:*max-report-payload* #:*max-subscription-interval* #:*subscription-grace*
+   #:*timed-request-grace*
+   #:server-subscription #:server-subscription-p #:server-subscription-id #:server-subscription-session
+   #:server-subscription-paths #:server-subscription-min-interval #:server-subscription-max-interval
+   #:server-subscription-last-report #:server-subscription-dirty
+   #:subscription #:subscription-p #:subscription-model #:subscription-session #:subscription-id
+   #:subscription-paths #:subscription-min-interval #:subscription-max-interval #:subscription-on-report
+   #:subscription-on-failure #:subscription-state #:subscription-last-report #:subscription-primed-reports
+   #:subscription-active-p #:unsubscribe
+   #:interaction-model #:interaction-model-p #:make-interaction-model #:interaction-model-manager
+   #:interaction-model-node #:interaction-model-subscriptions #:interaction-model-client-subscriptions
+   #:interaction-model-now #:interaction-model-close
+   #:interaction #:interaction-p #:interaction-kind #:interaction-exchange #:interaction-state
+   #:interaction-result #:interaction-condition #:interaction-running-p #:interaction-complete-p
+   #:interaction-failed-p
+   #:start-read #:start-write #:start-invoke #:start-subscribe #:interaction-abort #:interaction-wait
+   #:read-attributes #:write-attributes #:invoke-command #:subscribe-attributes
+   #:attribute-report-value #:attribute-write #:command-fields #:invoke-response-value))

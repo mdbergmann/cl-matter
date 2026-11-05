@@ -71,7 +71,21 @@ resumption state for the next time, answers BUSY while a PASE handshake is
 running, and does CloseSession. Application protocols plug in as handler
 functions per protocol id. `test/exchange-test.lisp` drives two nodes over
 an in-memory network with a stepped clock (lossy links, retransmission
-schedules, timeouts) and over real loopback UDP sockets.
+schedules, timeouts) and over real loopback UDP sockets. The Interaction
+Model runs on that: its message codec (`src/matter/interaction-codec.lisp`,
+every path, information block and message of chapter 10), a data model
+(`src/matter/data-model.lisp`: `define-cluster` describes a cluster's
+attributes and commands with their types, a node is endpoints of cluster
+instances with values, data versions and command handlers, and the global
+attributes are computed), the first clusters (`src/matter/clusters.lisp`:
+Descriptor, Basic Information, Identify, On/Off), and the engine
+(`src/matter/interaction.lisp`) that serves Read, Write, Invoke and
+Subscribe from a node and performs them against a peer: wildcard paths,
+per-path statuses, chunked reports, data version filters, timed requests,
+and subscriptions that report changes after the minimum interval and keep
+alive at the maximum, in both directions. `test/data-model-test.lisp` and
+`test/interaction-test.lisp` cover it, the last one with a server thread
+over UDP after a PASE handshake.
 
 ```lisp
 ;; the commissionee stores a verifier, never the passcode
@@ -119,6 +133,30 @@ schedules, timeouts) and over real loopback UDP sockets.
 ```
 
 ```lisp
+;; a light: the root endpoint with Basic Information, endpoint 1 with On/Off
+(defvar *light* (cl-matter:make-on-off-cluster
+                 :on-change (lambda (cluster on) (declare (ignore cluster)) (set-relay on))))
+(defvar *node* (cl-matter:make-basic-node
+                :vendor-name "ACME" :vendor-id #xFFF1 :product-name "Lamp" :product-id 1
+                :endpoints (list (cl-matter:make-endpoint
+                                  1 :device-types (list (cons cl-matter:+device-type-on-off-light+ 3))
+                                    :clusters (list (cl-matter:make-identify-cluster) *light*)))))
+(defvar *im* (cl-matter:make-interaction-model *m* :node *node*))   ; serves it to every session
+(setf (cl-matter:attribute-value *light* 'on-off) t)   ; a local change: subscribers hear of it
+;; as a controller, on a session from the Secure Channel
+(cl-matter:read-attributes *im* session (list (cl-matter:attribute-path 1 #x0006 0)
+                                              (cl-matter:attribute-path nil #x001D nil)))
+;; => ATTRIBUTE-REPORTs; ATTRIBUTE-REPORT-VALUE decodes a defined cluster's value
+(cl-matter:write-attributes *im* session (list (cl-matter:attribute-write 0 #x0028 5 "Kitchen")))
+(cl-matter:invoke-command *im* session (cl-matter:command-path 1 #x0006 2) nil)   ; Toggle
+(cl-matter:subscribe-attributes *im* session (list (cl-matter:attribute-path 1 #x0006 0))
+                                :min-interval 1 :max-interval 60
+                                :on-report (lambda (subscription reports) ...))
+;; START-READ ... START-SUBSCRIBE are the non-blocking forms (:on-complete), for a
+;; node that polls its own manager; a new cluster is a DEFINE-CLUSTER plus handlers
+```
+
+```lisp
 (dns-sd:browse "_http._tcp")
 ;; => ("Printer._http._tcp.local" ...), <all records received>
 (dns-sd:resolve "Printer._http._tcp.local")
@@ -160,9 +198,14 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   certificates (PAI/DAC) or certification declarations.
 - **Message privacy** (the P flag, privacy keys): not implemented; group
   messages and group keys likewise.
-- **Interaction model and clusters**: no Read/Write/Invoke/Subscribe, no
-  data model, no Basic Information or Descriptor cluster, so no
-  commissioning flow beyond the PASE session keys.
+- **Interaction model**: events are accepted in requests and never
+  reported; there is no access control (any session may do what the
+  definitions allow), no fabric-scoped data, no list chunking (an
+  attribute too big for one message is reported RESOURCE_EXHAUSTED) and
+  no group writes or invokes. Only Descriptor, Basic Information, Identify
+  and On/Off are defined; the commissioning clusters (General
+  Commissioning, Operational Credentials, Network Commissioning, Access
+  Control) are not, so no commissioning flow beyond the PASE session yet.
 - **Commissioning**: no device attestation, no CSR exchange, no fabric
   provisioning; the commissionable-node mDNS advertisement is possible
   with the responder, but the `_matterc._udp` TXT keys are not generated.
@@ -189,4 +232,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. Then the interaction model: Read/Write/Invoke/Subscribe and the first clusters.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. Then the commissioning pieces: CSR, device attestation, DER import and the commissioning clusters, towards an interop test against chip-tool.

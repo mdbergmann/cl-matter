@@ -65,7 +65,11 @@
                  (:file "case")
                  (:file "session")
                  (:file "exchange")
-                 (:file "secure-channel"))))
+                 (:file "secure-channel")
+                 (:file "interaction-codec")
+                 (:file "data-model")
+                 (:file "clusters")
+                 (:file "interaction"))))
   :in-order-to ((test-op (test-op "cl-matter/tests"))))
 
 (defsystem "cl-matter/tests"
@@ -86,7 +90,9 @@
                  (:file "sdk-certificates")
                  (:file "certificate-test")
                  (:file "case-test")
-                 (:file "exchange-test"))))
+                 (:file "exchange-test")
+                 (:file "data-model-test")
+                 (:file "interaction-test"))))
   :description "Test system for cl-matter"
   :perform (test-op (op c) (symbol-call :fiveam :run!
                                         (find-symbol "TEST-SUITE" "CL-MATTER.TESTS"))))

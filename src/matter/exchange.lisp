@@ -126,6 +126,7 @@ for every notable event."
   (clock #'%real-time-clock)
   (next-exchange-id (random #x10000) :type (unsigned-byte 16))
   (buffer (make-array *receive-buffer-size* :element-type '(unsigned-byte 8)))
+  (timers '())                          ; (function . due), see ADD-TIMER
   (trace nil)
   (received 0)
   (sent 0))
@@ -155,6 +156,23 @@ SESSION-PARAMETERS; CLOCK to real time."
 (defun %trace (manager format &rest args)
   (let ((trace (exchange-manager-trace manager)))
     (when trace (apply trace format args))))
+
+(defun add-timer (manager function &key at)
+  "Call FUNCTION with the time once AT (default: now) has passed; it
+returns when it wants to run next, or NIL to be removed.  The poll loop
+wakes up for it."
+  (push (cons function (or at (exchange-manager-now manager))) (exchange-manager-timers manager))
+  function)
+
+(defun wake-timer (manager function)
+  "Run FUNCTION's timer at the next poll instead of when it last asked."
+  (let ((entry (assoc function (exchange-manager-timers manager))))
+    (when entry (setf (cdr entry) (exchange-manager-now manager)))
+    (and entry t)))
+
+(defun remove-timer (manager function)
+  (setf (exchange-manager-timers manager) (remove function (exchange-manager-timers manager) :key #'car))
+  nil)
 
 (defun %protocol-key (protocol-id vendor-id)
   (cons protocol-id (or vendor-id 0)))
@@ -437,6 +455,13 @@ reached, or NIL when it was dropped."
           (when (and (exchange-p exchange) (not (exchange-closed-p exchange)))
             (setf (exchange-outstanding exchange) nil)
             (%exchange-failed exchange :retransmission-limit))))))
+  ;; the application's timers
+  (dolist (entry (copy-list (exchange-manager-timers manager)))
+    (when (<= (cdr entry) now)
+      (let ((next (funcall (car entry) now)))
+        (if next
+            (setf (cdr entry) next)
+            (setf (exchange-manager-timers manager) (remove entry (exchange-manager-timers manager)))))))
   ;; idle unsecured contexts
   (let ((sm (exchange-manager-session-manager manager)))
     (dolist (session (session-manager-unsecured sm))
@@ -455,7 +480,9 @@ reached, or NIL when it was dropped."
         (consider (exchange-ack-due exchange))
         (consider (exchange-response-due exchange)))
       (dolist (session (%all-sessions manager))
-        (consider (mrp-next-deadline (session-retransmissions session)))))
+        (consider (mrp-next-deadline (session-retransmissions session))))
+      (dolist (entry (exchange-manager-timers manager))
+        (consider (cdr entry))))
     deadline))
 
 ;;; ------------------------------------------------------------------
