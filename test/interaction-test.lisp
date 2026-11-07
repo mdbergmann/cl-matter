@@ -185,6 +185,85 @@ returns the recorder's events cell."
       (is (= 8 (length reports)))
       (is (= 1 (count-if #'attribute-report-status reports))))))
 
+;;; A list that arrives in pieces (8.7.3.3), as real devices send their
+;;; AttributeList, PartsList or Fabrics: the list, then one report per
+;;; element with a list index.
+
+(defun data-report (path element)
+  (make-attribute-report :data (make-attribute-data :path path :data element)))
+
+(test merge-chunked-reports-basics
+  (let* ((parts (lambda (&optional index) (attribute-path 0 +cluster-descriptor+ 3 :list-index index)))
+         (types (lambda (&optional index) (attribute-path 1 +cluster-descriptor+ 0 :list-index index)))
+         (reports (list (data-report (funcall parts) (tlv-array nil (tlv nil :unsigned 1)))
+                        (data-report (attribute-path 0 +cluster-basic-information+ 1) (tlv nil :string "ACME"))
+                        (data-report (funcall parts :null) (tlv nil :unsigned 2))
+                        (data-report (funcall types) (tlv-array nil))
+                        (data-report (funcall parts :null) (tlv nil :unsigned 3))
+                        (data-report (funcall types :null) (tlv-structure nil (tlv 0 :unsigned #x10A) (tlv 1 :unsigned 2)))
+                        (data-report (funcall parts 0) (tlv nil :unsigned 9))))
+         (merged (merge-chunked-reports reports)))
+    (is (= 3 (length merged)))
+    (is (equalp (list (funcall parts) (attribute-path 0 +cluster-basic-information+ 1) (funcall types))
+                (mapcar #'attribute-report-path merged)))
+    (is (equal '(9 2 3) (attribute-report-value (first merged))))
+    (is (string= "ACME" (attribute-report-value (second merged))))
+    (is (equal '((:device-type #x10A :revision 2)) (attribute-report-value (third merged))))
+    ;; an element report decodes as one element, with or without a list to join
+    (is (= 2 (attribute-report-value (data-report (funcall parts :null) (tlv nil :unsigned 2)))))
+    (let ((orphan (merge-chunked-reports (list (data-report (funcall parts :null) (tlv nil :unsigned 2))))))
+      (is (= 1 (length orphan)))
+      (is (= 2 (attribute-report-value (first orphan)))))
+    ;; a status report of the attribute is not a list to join
+    (let ((status (make-attribute-report :status (make-attribute-status :path (funcall parts)
+                                                                        :status (im-status :unsupported-access)))))
+      (is (= 2 (length (merge-chunked-reports (list status (data-report (funcall parts :null) (tlv nil :unsigned 2))))))))
+    ;; an index past the end is the server's error
+    (signals interaction-error
+      (merge-chunked-reports (list (data-report (funcall parts) (tlv-array nil))
+                                   (data-report (funcall parts 3) (tlv nil :unsigned 9)))))
+    (is (null (merge-chunked-reports '())))))
+
+(test find-attribute-report-by-path
+  (let ((reports (list (data-report (attribute-path 0 +cluster-basic-information+ 4) (tlv nil :unsigned 80))
+                       (data-report (attribute-path 0 +cluster-basic-information+ 2) (tlv nil :unsigned #x130A)))))
+    (is (= #x130A (attribute-report-value (find-attribute-report reports 0 +cluster-basic-information+ 2))))
+    (is (= 80 (attribute-report-value (find-attribute-report reports 0 +cluster-basic-information+ 4))))
+    (is (null (find-attribute-report reports 1 +cluster-basic-information+ 2)))))
+
+(test read-chunked-list
+  "A server that sends its PartsList in pieces over two ReportData messages."
+  (let* ((rig (make-rig))
+         (a (make-interaction-model (rig-a rig)))
+         (parts (lambda (&optional index) (attribute-path 0 +cluster-descriptor+ 3 :list-index index)))
+         (messages 0))
+    (multiple-value-bind (sa sb) (secured-pair rig)
+      (declare (ignore sb))
+      (register-protocol-handler
+       (rig-b rig) +protocol-interaction-model+
+       (lambda (exchange event &rest data)
+         (declare (ignore data))
+         (when (eq event :message)
+           (incf messages)
+           (multiple-value-bind (opcode octets)
+               (encode-interaction-message
+                (if (= messages 1)      ; the ReadRequest: the list and its first extra element
+                    (make-report-data :attribute-reports (list (data-report (funcall parts) (tlv-array nil (tlv nil :unsigned 1)))
+                                                               (data-report (funcall parts :null) (tlv nil :unsigned 2)))
+                                      :more-chunked-messages t)
+                    ;; the StatusResponse to the first chunk: the rest
+                    (make-report-data :attribute-reports (list (data-report (funcall parts :null) (tlv nil :unsigned 3))
+                                                               (data-report (attribute-path 1 +cluster-on-off+ 0) (tlv nil :boolean t))))))
+             (exchange-send exchange opcode octets))
+           (when (= messages 2) (exchange-close exchange)))))
+      (let ((interaction (start-read a sa (list (funcall parts) (attribute-path 1 +cluster-on-off+ 0)))))
+        (run-rig rig (lambda () (not (interaction-running-p interaction))))
+        (is (interaction-complete-p interaction))
+        (let ((reports (interaction-result interaction)))
+          (is (= 2 (length reports)))
+          (is (equal '(1 2 3) (attribute-report-value (first reports))))
+          (is (eq t (attribute-report-value (second reports)))))))))
+
 (test read-data-version-filters
   (let* ((nr (make-node-rig))
          (version (cluster-data-version (nr-light nr)))

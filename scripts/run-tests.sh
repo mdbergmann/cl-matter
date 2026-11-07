@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run the cl-matter test suite.
 #
-#   scripts/run-tests.sh          # under AmiLisp (host build of ../amigastuff/cl-amiga)
+#   scripts/run-tests.sh          # under AmiLisp (host build of ../amigasources/cl-amiga)
 #   scripts/run-tests.sh --sbcl   # under SBCL
 #
 # Both need the project visible to ASDF: a symlink in ~/quicklisp/local-projects
@@ -9,7 +9,7 @@
 # AMILISP_REPO / AMILISP override where the AmiLisp checkout and binary are.
 set -e
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-AMILISP_REPO=${AMILISP_REPO:-$HERE/../amigastuff/cl-amiga}
+AMILISP_REPO=${AMILISP_REPO:-$HERE/../amigasources/cl-amiga}
 AMILISP=${AMILISP:-$AMILISP_REPO/build/host/amilisp}
 LOG=${TMPDIR:-/tmp}/cl-matter-tests.log
 

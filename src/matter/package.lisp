@@ -797,6 +797,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:start-read #:start-write #:start-invoke #:start-subscribe #:interaction-abort #:interaction-wait
    #:read-attributes #:write-attributes #:invoke-command #:subscribe-attributes
    #:attribute-report-value #:attribute-write #:command-fields #:invoke-response-value
+   #:merge-chunked-reports #:find-attribute-report
    #:session-fabric-index
    ;; commissioning (commissioning.lisp)
    #:+cluster-general-commissioning+ #:+cluster-network-commissioning+

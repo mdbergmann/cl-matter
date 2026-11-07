@@ -10,7 +10,7 @@
 ;;;; "en0"), LAMP_TRACE (set for the exchange trace), LAMP_STORAGE (the
 ;;;; state file, default ~/.cl-matter/lamp-device.state; empty for none),
 ;;;; AMILISP_REPO (where lib/quicklisp-compat.lisp is; default
-;;;; ../../amigastuff/cl-amiga from here).
+;;;; ../../amigasources/cl-amiga from here).
 ;;;;
 ;;;; The device listens on every IPv6 address (Matter is IPv6), advertises
 ;;;; itself over mDNS with the SDK's example credentials (vendor FFF1,
@@ -31,7 +31,7 @@
 (let ((compat (merge-pathnames "lib/quicklisp-compat.lisp"
                                (uiop:ensure-directory-pathname
                                 (or (uiop:getenv "AMILISP_REPO")
-                                    (uiop:merge-pathnames* "../../amigastuff/cl-amiga/"
+                                    (uiop:merge-pathnames* "../../amigasources/cl-amiga/"
                                                            (uiop:pathname-directory-pathname *load-truename*)))))))
   (when (probe-file compat) (load compat)))
 (asdf:load-system :cl-matter)

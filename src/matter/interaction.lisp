@@ -18,9 +18,13 @@
 ;;;; UNSUPPORTED_ACCESS, a wildcard silently leaves out what it may not
 ;;;; read (8.4.3.2).
 ;;;;
+;;;; A list the server sends in pieces (8.7.3.3: the list, then one report
+;;;; per element with a list index) is put together again on the client, so
+;;;; a read or subscription delivers every attribute once.  As a server, an
+;;;; attribute too big for one message is reported RESOURCE_EXHAUSTED.
+;;;;
 ;;;; Not done: events (event requests are accepted and never answered),
-;;;; list chunking (an attribute too big for one message is reported
-;;;; RESOURCE_EXHAUSTED), group writes.
+;;;; list chunking as a server, group writes.
 
 (in-package :cl-matter)
 
@@ -633,11 +637,60 @@ writable, and be theirs to write (in that order of refusal)."
            (unless (report-data-suppress-response message)
              (%send-status exchange :success))
            (unless (report-data-more-chunked-messages message)
-             (let ((reports (subscription-chunk subscription)))
+             (let ((reports (merge-chunked-reports (subscription-chunk subscription))))
                (setf (subscription-chunk subscription) '())
                (exchange-close exchange)
                (when (subscription-on-report subscription)
                  (funcall (subscription-on-report subscription) subscription reports))))))))
+
+;;; ------------------------------------------------------------------
+;;; Client: lists that arrived in pieces
+
+(defun %same-attribute-p (a b)
+  (and (eql (attribute-path-endpoint a) (attribute-path-endpoint b))
+       (eql (attribute-path-cluster a) (attribute-path-cluster b))
+       (eql (attribute-path-attribute a) (attribute-path-attribute b))))
+
+(defun merge-chunked-reports (reports)
+  "REPORTS with the pieces of a chunked list (8.7.3.3) folded into the
+list: a data report whose path has a list index is an element -- appended
+when the index is :NULL, replacing the element at the index otherwise -- of
+the last report of the same attribute whose data is a whole list.  Reports
+keep their order; an element without such a list stays as it came."
+  (let ((merged '()))
+    (dolist (report reports)
+      (let* ((data (attribute-report-data report))
+             (path (and data (attribute-data-path data)))
+             (index (and path (attribute-path-list-index path)))
+             (whole (and index
+                         (find-if (lambda (r)
+                                    (let ((d (attribute-report-data r)))
+                                      (and d (null (attribute-path-list-index (attribute-data-path d)))
+                                           (%same-attribute-p (attribute-data-path d) path)
+                                           (eq :array (tlv-element-type (attribute-data-data d))))))
+                                  merged))))
+        (cond ((null whole) (push report merged))
+              (t (let* ((list (attribute-report-data whole))
+                        (items (tlv-element-value (attribute-data-data list)))
+                        (item (let ((element (attribute-data-data data)))
+                                (make-tlv-element nil (tlv-element-type element) (tlv-element-value element)))))
+                   (setf (attribute-data-data list)
+                         (make-tlv-element (tlv-element-tag (attribute-data-data list)) :array
+                                           (cond ((eq index :null) (append items (list item)))
+                                                 ((< -1 index (length items))
+                                                  (let ((new (copy-list items))) (setf (nth index new) item) new))
+                                                 (t (%im-fail :invalid-action "list index ~d of ~a is out of range (~d items)"
+                                                              index path (length items)))))))))))
+    (nreverse merged)))
+
+(defun find-attribute-report (reports endpoint cluster attribute)
+  "The report in REPORTS for the concrete path ENDPOINT/CLUSTER/ATTRIBUTE, or NIL."
+  (find-if (lambda (report)
+             (let ((path (attribute-report-path report)))
+               (and (eql endpoint (attribute-path-endpoint path))
+                    (eql cluster (attribute-path-cluster path))
+                    (eql attribute (attribute-path-attribute path)))))
+           reports))
 
 ;;; ------------------------------------------------------------------
 ;;; Client: interactions
@@ -713,7 +766,7 @@ holds the outcome) or :FAILED (CONDITION holds the error)."
               (%send-status exchange :success))
              (t
               (unless (report-data-suppress-response message) (%send-status exchange :success))
-              (%interaction-complete interaction (interaction-reports interaction)))))
+              (%interaction-complete interaction (merge-chunked-reports (interaction-reports interaction))))))
       (:write
        (%expect interaction message 'write-response)
        (%interaction-complete interaction (write-response-write-responses message)))
@@ -739,7 +792,7 @@ holds the outcome) or :FAILED (CONDITION holds the error)."
                   (%im-fail :invalid-action "SubscribeResponse names subscription ~d, the reports ~d"
                             (subscribe-response-subscription-id message) (subscription-id subscription)))
                 (setf (subscription-max-interval subscription) (subscribe-response-max-interval message)
-                      (subscription-primed-reports subscription) (interaction-reports interaction)
+                      (subscription-primed-reports subscription) (merge-chunked-reports (interaction-reports interaction))
                       (subscription-last-report subscription) (interaction-model-now (interaction-model interaction)))
                 (push subscription (interaction-model-client-subscriptions (interaction-model interaction)))
                 (%interaction-complete interaction subscription))))))))
@@ -853,12 +906,16 @@ SUBSCRIPTION-PRIMED-REPORTS, later ones go to ON-REPORT."
 (defun attribute-report-value (report)
   "The Lisp value of a data REPORT when its cluster and attribute are
 defined here (second value T), else the TLV element; a status report
-gives its IM-STATUS and :STATUS."
+gives its IM-STATUS and :STATUS.  A report of one list element (a path
+with a list index, see MERGE-CHUNKED-REPORTS) gives the element's value."
   (let ((data (attribute-report-data report)))
     (if (null data)
         (values (attribute-status-status (attribute-report-status report)) :status)
         (let* ((path (attribute-data-path data))
                (type (%attribute-type (attribute-path-cluster path) (attribute-path-attribute path))))
+          (when (and type (attribute-path-list-index path))
+            (let ((resolved (resolve-type type)))
+              (setf type (and (eq :list (%type-kind resolved)) (second resolved)))))
           (if type
               (values (tlv-value type (attribute-data-data data)) t)
               (values (attribute-data-data data) nil))))))
