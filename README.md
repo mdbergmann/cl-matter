@@ -108,7 +108,11 @@ and the place to see it used.
   commissioner's search. `test/discovery-test.lisp`.
 - **Interop**: `examples/lamp-device.lisp` on the real network, driven by
   chip-tool (pairing, On/Off, ACL writes, a second administrator through
-  an opened window, unpair, restart).
+  an opened window, unpair, restart).  The other way round,
+  `examples/find-devices.lisp`, `commission-device.lisp` and
+  `control-device.lisp`: the nodes on the network, a real device
+  commissioned with its pairing code through the window its first
+  administrator opened, and read and switched later from the saved state.
 
 The API in sketches, bottom up (each one is a call sequence from the
 layer's test file):
@@ -298,9 +302,14 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   responder cannot run.
 - **Interop**: chip-tool (the Matter SDK's reference controller) commissions
   `examples/lamp-device.lisp`, toggles and reads it, and removes its fabric
-  again (2026-11-05, SDK master on macOS).  No other controller and no real
-  device has been tried yet; cl-matter's own commissioner has only
-  commissioned cl-matter devices.
+  again (2026-11-05, SDK master on macOS).  cl-matter's commissioner has
+  commissioned one real device, an Eve Energy plug on Thread behind Apple
+  border routers, as its third administrator through the window Apple
+  Home opened, and reads and switches it from the saved state
+  (2026-11-07, `examples/commission-device.lisp`, `control-device.lisp`).
+  Attestation ran with `:ignore`: the trust store holds the SDK's test
+  PAAs only, not the production ones of the Distributed Compliance
+  Ledger.  No other controller has been tried against the lamp.
 
 ## Build and test
 
