@@ -2,7 +2,8 @@
 ;;;; Bridged Device Basic Information (Matter Core Specification chapter 9
 ;;;; and 11), Identify and On/Off (Matter Application Cluster Specification
 ;;;; chapters 1.2 and 1.5), Boolean State and Temperature Measurement
-;;;; (chapters 1.7 and 2.3); and the endpoints of a bridge (Matter Device
+;;;; (chapters 1.7 and 2.3), Window Covering and Thermostat (chapters 5.3
+;;;; and 4.3); and the endpoints of a bridge (Matter Device
 ;;;; Library Specification chapter 9: Aggregator and Bridged Node).  Each
 ;;;; is a DEFINE-CLUSTER plus, where the behaviour is generic, a
 ;;;; constructor that installs the command handlers.
@@ -18,6 +19,8 @@
 (defconstant +cluster-on-off+ #x0006)
 (defconstant +cluster-boolean-state+ #x0045)
 (defconstant +cluster-temperature-measurement+ #x0402)
+(defconstant +cluster-window-covering+ #x0102)
+(defconstant +cluster-thermostat+ #x0201)
 
 (defconstant +device-type-root-node+ #x0016)
 (defconstant +device-type-aggregator+ #x000E)
@@ -27,6 +30,8 @@
 (defconstant +device-type-on-off-light-switch+ #x0103)
 (defconstant +device-type-contact-sensor+ #x0015)
 (defconstant +device-type-temperature-sensor+ #x0302)
+(defconstant +device-type-window-covering+ #x0202)
+(defconstant +device-type-thermostat+ #x0301)
 
 (defun %descriptor-device-types (cluster)
   (loop :for (id . revision) :in (endpoint-device-types (cluster-endpoint cluster))
@@ -250,6 +255,211 @@ carries, clamped to the type's range; anything else is :NULL."
   (if (realp celsius)
       (max -32768 (min 32767 (round (* 100 celsius))))
       :null))
+
+;;; ------------------------------------------------------------------
+;;; Window Covering (0x0102): a shutter, blind or awning.  Positions are
+;;; in hundredths of a percent, 0 fully open and 10000 fully closed; the
+;;; cluster keeps current and target, the application moves the covering
+;;; and reports where it is with (setf attribute-value).
+
+(define-cluster window-covering (+cluster-window-covering+ :revision 5)
+  (:attributes
+   (type 0 :enum8 :default 0)
+   (physical-closed-limit-lift 1 :uint16 :optional t)
+   (physical-closed-limit-tilt 2 :uint16 :optional t)
+   (current-position-lift 3 (:nullable :uint16) :optional t)
+   (current-position-tilt 4 (:nullable :uint16) :optional t)
+   (number-of-actuations-lift 5 :uint16 :optional t)
+   (number-of-actuations-tilt 6 :uint16 :optional t)
+   (config-status 7 :bitmap8 :default 0)
+   (current-position-lift-percentage 8 (:nullable :percent) :optional t)
+   (current-position-tilt-percentage 9 (:nullable :percent) :optional t)
+   (operational-status 10 :bitmap8 :default 0)
+   (target-position-lift-percent100ths 11 (:nullable :percent100ths) :optional t)
+   (target-position-tilt-percent100ths 12 (:nullable :percent100ths) :optional t)
+   (end-product-type 13 :enum8 :default 0)
+   (current-position-lift-percent100ths 14 (:nullable :percent100ths) :optional t)
+   (current-position-tilt-percent100ths 15 (:nullable :percent100ths) :optional t)
+   (installed-open-limit-lift 16 :uint16 :optional t)
+   (installed-closed-limit-lift 17 :uint16 :optional t)
+   (installed-open-limit-tilt 18 :uint16 :optional t)
+   (installed-closed-limit-tilt 19 :uint16 :optional t)
+   (mode 23 :bitmap8 :default 0 :writable t :write :manage)
+   (safety-status 26 :bitmap16 :optional t))
+  (:commands
+   (up-or-open 0)
+   (down-or-close 1)
+   (stop-motion 2)
+   (go-to-lift-value 4 :fields ((0 :lift-value :uint16)))
+   (go-to-lift-percentage 5 :fields ((0 :lift-percent100ths-value :percent100ths)))
+   (go-to-tilt-value 7 :fields ((0 :tilt-value :uint16)))
+   (go-to-tilt-percentage 8 :fields ((0 :tilt-percent100ths-value :percent100ths)))))
+
+(defparameter *window-covering-features*
+  '((:lift . 1) (:tilt . 2) (:position-aware-lift . 4) (:absolute-position . 8) (:position-aware-tilt . 16))
+  "The FeatureMap bits of Window Covering by name.")
+
+(defun window-covering-features (names)
+  "The FeatureMap of a Window Covering with the features NAMES (keywords of
+`*window-covering-features*')."
+  (reduce #'logior (mapcar (lambda (name)
+                             (or (cdr (assoc name *window-covering-features*))
+                                 (error "~s is not a Window Covering feature, one of ~{~s~^, ~} is"
+                                        name (mapcar #'car *window-covering-features*))))
+                           names)
+          :initial-value 0))
+
+(defun percent-hundredths (percent)
+  "PERCENT, a real 0..100, as the percent100ths Window Covering carries
+(0..10000, clamped); anything else is :NULL."
+  (if (realp percent)
+      (max 0 (min 10000 (round (* 100 percent))))
+      :null))
+
+(defun make-window-covering-cluster (&key (features '(:lift :position-aware-lift)) type
+                                       (current-lift :null) (current-tilt :null)
+                                       on-move on-lift on-tilt)
+  "A Window Covering cluster with the FEATURES named (see
+`*window-covering-features*'): with :LIFT it accepts UpOrOpen, DownOrClose
+and StopMotion; with :POSITION-AWARE-LIFT it carries the lift position
+(CURRENT-LIFT, in hundredths of a percent, 10000 closed) and its target
+and accepts GoToLiftPercentage; :TILT and :POSITION-AWARE-TILT likewise
+for the tilt (CURRENT-TILT, GoToTiltPercentage).  TYPE is the Type
+attribute, default a roller shade, or a blind with lift and tilt when
+there is tilt.
+
+The application does the moving: ON-MOVE is called with the cluster and
+:OPEN, :CLOSE or :STOP, ON-LIFT and ON-TILT with the cluster and the
+target in hundredths of a percent, after the target attribute has been
+set (open 0, close 10000, stop the current position).  Where it is now the
+application reports with (setf attribute-value) on
+CurrentPositionLiftPercent100ths and CurrentPositionTiltPercent100ths."
+  (let* ((feature-map (window-covering-features features))
+         (lift (member :lift features))
+         (tilt (member :tilt features))
+         (lift-aware (and lift (member :position-aware-lift features)))
+         (tilt-aware (and tilt (member :position-aware-tilt features)))
+         (cluster (apply #'make-cluster 'window-covering
+                         :feature-map feature-map
+                         :type (or type (if tilt 8 0))
+                         :config-status (logior 1 (if lift-aware 8 0) (if tilt-aware 16 0))
+                         (append (when lift-aware
+                                   (list :current-position-lift-percent100ths current-lift
+                                         :target-position-lift-percent100ths current-lift))
+                                 (when tilt-aware
+                                   (list :current-position-tilt-percent100ths current-tilt
+                                         :target-position-tilt-percent100ths current-tilt))))))
+    (labels ((target (attribute value)
+               (when (attribute-present-p cluster attribute)
+                 (setf (attribute-value cluster attribute) value)))
+             (percent-field (fields key)
+               (let ((value (getf fields key)))
+                 (if (<= 0 value 10000) value :constraint-error)))
+             (move (direction lift-target)
+               (lambda (cluster fields)
+                 (declare (ignore fields))
+                 (when (attribute-present-p cluster 'target-position-lift-percent100ths)
+                   (setf (attribute-value cluster 'target-position-lift-percent100ths)
+                         (or lift-target (attribute-value cluster 'current-position-lift-percent100ths))))
+                 (when on-move (funcall on-move cluster direction))
+                 nil)))
+      (when lift
+        (setf (command-handler cluster 'up-or-open) (move :open 0)
+              (command-handler cluster 'down-or-close) (move :close 10000)
+              (command-handler cluster 'stop-motion) (move :stop nil)))
+      (when lift-aware
+        (setf (command-handler cluster 'go-to-lift-percentage)
+              (lambda (cluster fields)
+                (let ((value (percent-field fields :lift-percent100ths-value)))
+                  (if (integerp value)
+                      (progn
+                        (target 'target-position-lift-percent100ths value)
+                        (when on-lift (funcall on-lift cluster value))
+                        nil)
+                      value)))))
+      (when tilt-aware
+        (setf (command-handler cluster 'go-to-tilt-percentage)
+              (lambda (cluster fields)
+                (let ((value (percent-field fields :tilt-percent100ths-value)))
+                  (if (integerp value)
+                      (progn
+                        (target 'target-position-tilt-percent100ths value)
+                        (when on-tilt (funcall on-tilt cluster value))
+                        nil)
+                      value))))))
+    cluster))
+
+;;; ------------------------------------------------------------------
+;;; Thermostat (0x0201), heating only: LocalTemperature and the
+;;; OccupiedHeatingSetpoint an administrator writes or raises and lowers,
+;;; both in hundredths of a degree; SystemMode Off or Heat.
+
+(defun %check-heating-setpoint (cluster value)
+  (unless (<= (attribute-value cluster 'min-heat-setpoint-limit)
+              value
+              (attribute-value cluster 'max-heat-setpoint-limit))
+    (%constraint "the heating setpoint must be ~d..~d, got ~d"
+                 (attribute-value cluster 'min-heat-setpoint-limit)
+                 (attribute-value cluster 'max-heat-setpoint-limit)
+                 value)))
+
+(define-cluster thermostat (+cluster-thermostat+ :revision 6)
+  (:attributes
+   (local-temperature 0 (:nullable :temperature) :default :null)
+   (outdoor-temperature 1 (:nullable :temperature) :optional t)
+   (occupancy 2 :bitmap8 :optional t)
+   (abs-min-heat-setpoint-limit 3 :temperature :default 700)
+   (abs-max-heat-setpoint-limit 4 :temperature :default 3000)
+   (pi-heating-demand 8 :uint8 :optional t)
+   (occupied-heating-setpoint #x12 :temperature :default 2000 :writable t :check #'%check-heating-setpoint)
+   (min-heat-setpoint-limit #x15 :temperature :default 700 :writable t :write :manage)
+   (max-heat-setpoint-limit #x16 :temperature :default 3000 :writable t :write :manage)
+   (control-sequence-of-operation #x1B :enum8 :default 2 :writable t :write :manage)
+   (system-mode #x1C :enum8 :default 4 :writable t :write :manage)
+   (thermostat-running-state #x29 :bitmap16 :optional t))
+  (:commands
+   (setpoint-raise-lower 0 :fields ((0 :mode :enum8) (1 :amount :int8)))))
+
+(defconstant +thermostat-feature-heating+ 1)
+
+(defun make-thermostat-cluster (&key (local-temperature :null) (occupied-heating-setpoint 2000)
+                                  (min-heat-setpoint-limit 700) (max-heat-setpoint-limit 3000)
+                                  (system-mode 4)
+                                  on-setpoint-change on-system-mode-change)
+  "A heating-only Thermostat cluster: LOCAL-TEMPERATURE and
+OCCUPIED-HEATING-SETPOINT in hundredths of a degree (`temperature-hundredths'),
+the setpoint kept within the limits, SYSTEM-MODE 0 (Off) or 4 (Heat).
+ON-SETPOINT-CHANGE is called with the cluster and the new setpoint when a
+peer writes it or sends SetpointRaiseLower, ON-SYSTEM-MODE-CHANGE with
+the cluster and the new mode when a peer writes it.  The application
+reports the temperature it measures and the setpoint set elsewhere with
+(setf attribute-value), which runs neither."
+  (let ((cluster (make-cluster 'thermostat
+                               :feature-map +thermostat-feature-heating+
+                               :local-temperature local-temperature
+                               :occupied-heating-setpoint occupied-heating-setpoint
+                               :min-heat-setpoint-limit min-heat-setpoint-limit
+                               :max-heat-setpoint-limit max-heat-setpoint-limit
+                               :abs-min-heat-setpoint-limit min-heat-setpoint-limit
+                               :abs-max-heat-setpoint-limit max-heat-setpoint-limit
+                               :system-mode system-mode)))
+    (when on-setpoint-change
+      (setf (attribute-write-handler cluster 'occupied-heating-setpoint) on-setpoint-change))
+    (when on-system-mode-change
+      (setf (attribute-write-handler cluster 'system-mode) on-system-mode-change))
+    (setf (command-handler cluster 'setpoint-raise-lower)
+          (lambda (cluster fields)
+            ;; mode 0 heat, 1 cool, 2 both; the amount in tenths of a degree
+            (when (member (getf fields :mode) '(0 2))
+              (let ((setpoint (max (attribute-value cluster 'min-heat-setpoint-limit)
+                                   (min (attribute-value cluster 'max-heat-setpoint-limit)
+                                        (+ (attribute-value cluster 'occupied-heating-setpoint)
+                                           (* 10 (getf fields :amount)))))))
+                (unless (= setpoint (attribute-value cluster 'occupied-heating-setpoint))
+                  (setf (attribute-value cluster 'occupied-heating-setpoint) setpoint)
+                  (when on-setpoint-change (funcall on-setpoint-change cluster setpoint)))))
+            nil))
+    cluster))
 
 ;;; ------------------------------------------------------------------
 ;;; A whole node

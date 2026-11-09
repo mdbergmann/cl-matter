@@ -434,6 +434,148 @@ temperature sensor serve."
   (is (eq :null (temperature-hundredths nil)))
   (is (eq :null (temperature-hundredths "21"))))
 
+(test window-covering-cluster
+  "Window Covering: lift with position, the target set by the commands,
+the application told what to do; tilt only when asked for."
+  (let* ((moves '())
+         (lifts '())
+         (c (make-window-covering-cluster
+             :current-lift 2500
+             :on-move (lambda (cluster direction) (declare (ignore cluster)) (push direction moves))
+             :on-lift (lambda (cluster value) (declare (ignore cluster)) (push value lifts)))))
+    (is (= +cluster-window-covering+ (cluster-id c)))
+    (is (= 5 (cluster-revision c)))
+    (is (= 5 (cluster-feature-map c)))                       ; LF | PA_LF
+    (is (= 0 (attribute-value c 'type)))                     ; a roller shade
+    (is (= 9 (attribute-value c 'config-status)))            ; operational, lift position aware
+    (is (= 2500 (attribute-value c 'current-position-lift-percent100ths)))
+    (is (= 2500 (attribute-value c 'target-position-lift-percent100ths)))
+    (is (not (attribute-present-p c 'current-position-tilt-percent100ths)))
+    (is (equal '(0 1 2 5) (cluster-accepted-command-ids c)))
+    ;; the commands set the target and tell the application
+    (invoke-cluster-command c 0 nil)
+    (is (= 0 (attribute-value c 'target-position-lift-percent100ths)))
+    (invoke-cluster-command c 1 nil)
+    (is (= 10000 (attribute-value c 'target-position-lift-percent100ths)))
+    (setf (attribute-value c 'current-position-lift-percent100ths) 4000)
+    (invoke-cluster-command c 2 nil)
+    (is (= 4000 (attribute-value c 'target-position-lift-percent100ths)))
+    (is (equal '(:open :close :stop) (reverse moves)))
+    (multiple-value-bind (response status)
+        (invoke-cluster-command c 5 (tlv nil :structure (list (tlv 0 :unsigned 7500))))
+      (is (null response))
+      (is (im-status-success-p status)))
+    (is (= 7500 (attribute-value c 'target-position-lift-percent100ths)))
+    (is (equal '(7500) lifts))
+    ;; past 100 %: CONSTRAINT_ERROR, nothing moves
+    (multiple-value-bind (response status)
+        (invoke-cluster-command c 5 (tlv nil :structure (list (tlv 0 :unsigned 10001))))
+      (is (null response))
+      (is (= +im-status-constraint-error+ (im-status-status status))))
+    (is (= 7500 (attribute-value c 'target-position-lift-percent100ths)))
+    (is (equal '(7500) lifts))
+    ;; a peer may write Mode, not the positions
+    (is (= 4 (write-attribute c 23 (tlv nil :unsigned 4))))
+    (is (eq :unsupported-write (status-of (lambda () (write-attribute c 14 (tlv nil :unsigned 1)))))))
+  ;; lift without position: no position attributes, no GoToLiftPercentage
+  (let ((c (make-window-covering-cluster :features '(:lift))))
+    (is (= 1 (cluster-feature-map c)))
+    (is (= 1 (attribute-value c 'config-status)))
+    (is (not (attribute-present-p c 'current-position-lift-percent100ths)))
+    (is (equal '(0 1 2) (cluster-accepted-command-ids c)))
+    (is (null (invoke-cluster-command c 2 nil))))
+  ;; lift and tilt
+  (let* ((tilts '())
+         (c (make-window-covering-cluster :features '(:lift :position-aware-lift :tilt :position-aware-tilt)
+                                          :current-lift 0 :current-tilt 5000
+                                          :on-tilt (lambda (cluster value) (declare (ignore cluster)) (push value tilts)))))
+    (is (= 23 (cluster-feature-map c)))
+    (is (= 8 (attribute-value c 'type)))                     ; a blind with lift and tilt
+    (is (= 25 (attribute-value c 'config-status)))
+    (is (= 5000 (attribute-value c 'current-position-tilt-percent100ths)))
+    (is (equal '(0 1 2 5 8) (cluster-accepted-command-ids c)))
+    (invoke-cluster-command c 8 (tlv nil :structure (list (tlv 0 :unsigned 1000))))
+    (is (= 1000 (attribute-value c 'target-position-tilt-percent100ths)))
+    (is (equal '(1000) tilts)))
+  (is (= 3 (window-covering-features '(:lift :tilt))))
+  (signals error (window-covering-features '(:lift :slats)))
+  (signals error (make-window-covering-cluster :features '(:fly)))
+  ;; percent to the wire
+  (is (= 3700 (percent-hundredths 37)))
+  (is (= 3750 (percent-hundredths 37.5)))
+  (is (= 10000 (percent-hundredths 150)))
+  (is (= 0 (percent-hundredths -1)))
+  (is (eq :null (percent-hundredths nil))))
+
+(test thermostat-cluster
+  "Thermostat, heating only: the setpoint written or stepped by a peer
+reaches the application, the limits hold, the application's own reports
+stay silent."
+  (let* ((setpoints '())
+         (modes '())
+         (c (make-thermostat-cluster
+             :local-temperature 2150 :occupied-heating-setpoint 2100
+             :on-setpoint-change (lambda (cluster value) (declare (ignore cluster)) (push value setpoints))
+             :on-system-mode-change (lambda (cluster value) (declare (ignore cluster)) (push value modes)))))
+    (is (= +cluster-thermostat+ (cluster-id c)))
+    (is (= 6 (cluster-revision c)))
+    (is (= 1 (cluster-feature-map c)))                       ; HEAT
+    (is (= 2150 (attribute-value c 'local-temperature)))
+    (is (= 2100 (attribute-value c 'occupied-heating-setpoint)))
+    (is (= 700 (attribute-value c 'abs-min-heat-setpoint-limit)))
+    (is (= 3000 (attribute-value c 'max-heat-setpoint-limit)))
+    (is (= 2 (attribute-value c 'control-sequence-of-operation)))
+    (is (= 4 (attribute-value c 'system-mode)))
+    (is (not (attribute-present-p c 'pi-heating-demand)))
+    (is (equal '(0) (cluster-accepted-command-ids c)))
+    ;; a peer writes the setpoint: within the limits, and the application hears
+    (is (= 2250 (write-attribute c #x12 (tlv nil :signed 2250))))
+    (is (equal '(2250) setpoints))
+    (is (eq :constraint-error (status-of (lambda () (write-attribute c #x12 (tlv nil :signed 3050))))))
+    (is (eq :constraint-error (status-of (lambda () (write-attribute c #x12 (tlv nil :signed 650))))))
+    (is (= 2250 (attribute-value c 'occupied-heating-setpoint)))
+    (is (equal '(2250) setpoints))
+    ;; the application's own report runs no handler
+    (setf (attribute-value c 'occupied-heating-setpoint) 2000)
+    (is (equal '(2250) setpoints))
+    ;; SetpointRaiseLower: heat +0.5, both -1.0, cool nothing, clamped to the limits
+    (invoke-cluster-command c 0 (tlv nil :structure (list (tlv 0 :unsigned 0) (tlv 1 :signed 5))))
+    (is (= 2050 (attribute-value c 'occupied-heating-setpoint)))
+    (invoke-cluster-command c 0 (tlv nil :structure (list (tlv 0 :unsigned 2) (tlv 1 :signed -10))))
+    (is (= 1950 (attribute-value c 'occupied-heating-setpoint)))
+    (invoke-cluster-command c 0 (tlv nil :structure (list (tlv 0 :unsigned 1) (tlv 1 :signed 5))))
+    (is (= 1950 (attribute-value c 'occupied-heating-setpoint)))
+    (invoke-cluster-command c 0 (tlv nil :structure (list (tlv 0 :unsigned 0) (tlv 1 :signed 127))))
+    (is (= 3000 (attribute-value c 'occupied-heating-setpoint)))
+    (invoke-cluster-command c 0 (tlv nil :structure (list (tlv 0 :unsigned 0) (tlv 1 :signed 1))))  ; at the limit: nothing
+    (is (equal '(2250 2050 1950 3000) (reverse setpoints)))
+    ;; the mode: Off
+    (write-attribute c #x1C (tlv nil :unsigned 0))
+    (is (= 0 (attribute-value c 'system-mode)))
+    (is (equal '(0) modes))
+    ;; the limits are the application's to give
+    (let ((c (make-thermostat-cluster :min-heat-setpoint-limit 1000 :max-heat-setpoint-limit 2500)))
+      (is (= 1000 (attribute-value c 'abs-min-heat-setpoint-limit)))
+      (is (eq :constraint-error (status-of (lambda () (write-attribute c #x12 (tlv nil :signed 2600))))))
+      (is (= 2500 (write-attribute c #x12 (tlv nil :signed 2500)))))))
+
+(test attribute-write-handlers
+  "A write handler runs after a peer's write only; a bad write runs none."
+  (let* ((heard '())
+         (c (make-cluster 'on-off :on-time 0)))
+    (is (null (attribute-write-handler c 'on-time)))
+    (setf (attribute-write-handler c 'on-time) (lambda (cluster value) (declare (ignore cluster)) (push value heard)))
+    (is-true (attribute-write-handler c #x4001))
+    (write-attribute c #x4001 (tlv nil :unsigned 5))
+    (is (equal '(5) heard))
+    (is (eq :invalid-data-type (status-of (lambda () (write-attribute c #x4001 (tlv nil :string "x"))))))
+    (setf (attribute-value c 'on-time) 7)
+    (is (equal '(5) heard))
+    (setf (attribute-write-handler c 'on-time) nil)
+    (write-attribute c #x4001 (tlv nil :unsigned 9))
+    (is (equal '(5) heard))
+    (signals error (setf (attribute-write-handler c 'no-such) #'identity))))
+
 (test nodes-and-endpoints
   (let* ((light (make-on-off-cluster))
          (node (make-basic-node :vendor-name "ACME" :vendor-id #xFFF1 :product-name "Lamp" :product-id 1

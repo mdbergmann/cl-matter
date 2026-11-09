@@ -331,13 +331,16 @@ when not given."
 
 (defstruct (cluster (:constructor %make-cluster))
   "One cluster on an endpoint.  VALUES holds the stored attributes by id;
-HANDLERS maps command ids to functions of (cluster fields-plist)."
+HANDLERS maps command ids to functions of (cluster fields-plist),
+WRITE-HANDLERS attribute ids to functions of (cluster value) run after a
+peer's write."
   definition
   endpoint
   (values (make-hash-table))
   (data-version (random (ash 1 32)))
   (feature-map 0)
-  (handlers '()))
+  (handlers '())
+  (write-handlers '()))
 
 (defmethod print-object ((c cluster) stream)
   (print-unreadable-object (c stream :type t)
@@ -512,7 +515,23 @@ signals."
         (funcall (attribute-definition-check attribute) cluster value))
       (%store-attribute cluster attribute value)
       (%attribute-changed cluster (attribute-definition-id attribute))
+      (let ((handler (cdr (assoc (attribute-definition-id attribute) (cluster-write-handlers cluster)))))
+        (when handler (funcall handler cluster value)))
       value)))
+
+(defun attribute-write-handler (cluster designator)
+  "The function run after a peer writes the attribute, or NIL."
+  (cdr (assoc (attribute-definition-id (%attribute cluster designator)) (cluster-write-handlers cluster))))
+
+(defun (setf attribute-write-handler) (handler cluster designator)
+  "Install HANDLER, a function of (cluster value), to run after a peer's
+write of the attribute has been stored and reported -- the application's
+hook to act on a written setpoint or mode.  (setf attribute-value), the
+application's own side, does not run it.  NIL removes it."
+  (let ((id (attribute-definition-id (%attribute cluster designator))))
+    (setf (cluster-write-handlers cluster) (remove id (cluster-write-handlers cluster) :key #'car))
+    (when handler (push (cons id handler) (cluster-write-handlers cluster)))
+    handler))
 
 (defun command-handler (cluster designator)
   (let ((command (find-command-definition (cluster-definition cluster) designator)))
