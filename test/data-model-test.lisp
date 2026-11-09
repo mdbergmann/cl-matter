@@ -396,6 +396,44 @@
     (invoke-cluster-command c 0 (tlv nil :structure (list (tlv 0 :unsigned 15))))
     (is (= 15 (attribute-value c 'identify-time)))))
 
+(test sensor-clusters
+  "Boolean State and Temperature Measurement: the clusters a contact and a
+temperature sensor serve."
+  (let ((c (make-boolean-state-cluster)))
+    (is (= +cluster-boolean-state+ (cluster-id c)))
+    (is (eq nil (attribute-value c 'state-value)))
+    (is (equal (list 0 #xFFF8 #xFFF9 #xFFFB #xFFFC #xFFFD) (cluster-attribute-ids c)))
+    (is (equal '() (cluster-accepted-command-ids c)))
+    (let ((v (cluster-data-version c)))
+      (setf (attribute-value c 'state-value) t)
+      (is (eq t (attribute-value c 0)))
+      (is (/= v (cluster-data-version c))))
+    (is (eq :invalid-data-type (status-of (lambda () (setf (attribute-value c 'state-value) 1))))))
+  (is (eq t (attribute-value (make-boolean-state-cluster :state-value t) 'state-value)))
+  (let ((c (make-temperature-measurement-cluster)))
+    (is (= +cluster-temperature-measurement+ (cluster-id c)))
+    (is (= 4 (cluster-revision c)))
+    (is (eq :null (attribute-value c 'measured-value)))
+    (is (eq :null (attribute-value c 'min-measured-value)))
+    (is (eq :null (attribute-value c 'max-measured-value)))
+    (is (not (attribute-present-p c 'tolerance)))
+    (setf (attribute-value c 'measured-value) 2150)
+    (is (= 2150 (attribute-value c 0)))
+    (is (equalp (tlv nil :signed 2150) (read-attribute c 0)))
+    (setf (attribute-value c 'measured-value) :null)
+    (is (eq :null (attribute-value c 0)))
+    (is (eq :constraint-error (status-of (lambda () (setf (attribute-value c 'measured-value) 40000)))))
+    (is (eq :invalid-data-type (status-of (lambda () (setf (attribute-value c 'measured-value) 21.5))))))
+  (is (= -1050 (attribute-value (make-temperature-measurement-cluster :measured-value -1050) 'measured-value)))
+  ;; degrees to the wire
+  (is (= 2150 (temperature-hundredths 21.5)))
+  (is (= 2150 (temperature-hundredths 43/2)))
+  (is (= -40 (temperature-hundredths -0.4d0)))
+  (is (= 32767 (temperature-hundredths 1000)))
+  (is (= -32768 (temperature-hundredths -1000)))
+  (is (eq :null (temperature-hundredths nil)))
+  (is (eq :null (temperature-hundredths "21"))))
+
 (test nodes-and-endpoints
   (let* ((light (make-on-off-cluster))
          (node (make-basic-node :vendor-name "ACME" :vendor-id #xFFF1 :product-name "Lamp" :product-id 1

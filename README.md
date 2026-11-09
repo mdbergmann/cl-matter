@@ -76,7 +76,8 @@ and the place to see it used.
   `define-cluster` for attributes and commands with their types, nodes of
   endpoints of cluster instances, endpoints with parts that come and go
   (a subscriber sees the PartsList change); Descriptor, Basic
-  Information, Bridged Device Basic Information, Identify and On/Off; the
+  Information, Bridged Device Basic Information, Identify, On/Off,
+  Boolean State and Temperature Measurement; the
   Aggregator and Bridged Node endpoints of a bridge
   (`make-aggregator-endpoint`, `make-bridged-endpoint`); Read, Write,
   Invoke and Subscribe served from a node and
@@ -294,7 +295,8 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   reported; no list chunking (an attribute too big for one message is
   reported RESOURCE_EXHAUSTED) and no group writes or invokes. Beyond
   the commissioning clusters only Descriptor, Basic Information, Bridged
-  Device Basic Information, Identify and On/Off are defined; the
+  Device Basic Information, Identify, On/Off, Boolean State and
+  Temperature Measurement are defined; the
   Aggregator and Bridged Node device types exist, the bridge's optional
   Actions cluster does not.
 - **Access control**: the Group auth mode never matches (there are no

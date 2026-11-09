@@ -1,7 +1,8 @@
 ;;;; clusters.lisp -- the first clusters: Descriptor, Basic Information and
 ;;;; Bridged Device Basic Information (Matter Core Specification chapter 9
 ;;;; and 11), Identify and On/Off (Matter Application Cluster Specification
-;;;; chapters 1.2 and 1.5); and the endpoints of a bridge (Matter Device
+;;;; chapters 1.2 and 1.5), Boolean State and Temperature Measurement
+;;;; (chapters 1.7 and 2.3); and the endpoints of a bridge (Matter Device
 ;;;; Library Specification chapter 9: Aggregator and Bridged Node).  Each
 ;;;; is a DEFINE-CLUSTER plus, where the behaviour is generic, a
 ;;;; constructor that installs the command handlers.
@@ -15,6 +16,8 @@
 (defconstant +cluster-bridged-device-basic-information+ #x0039)
 (defconstant +cluster-identify+ #x0003)
 (defconstant +cluster-on-off+ #x0006)
+(defconstant +cluster-boolean-state+ #x0045)
+(defconstant +cluster-temperature-measurement+ #x0402)
 
 (defconstant +device-type-root-node+ #x0016)
 (defconstant +device-type-aggregator+ #x000E)
@@ -22,6 +25,8 @@
 (defconstant +device-type-on-off-light+ #x0100)
 (defconstant +device-type-on-off-plug-in-unit+ #x010A)
 (defconstant +device-type-on-off-light-switch+ #x0103)
+(defconstant +device-type-contact-sensor+ #x0015)
+(defconstant +device-type-temperature-sensor+ #x0302)
 
 (defun %descriptor-device-types (cluster)
   (loop :for (id . revision) :in (endpoint-device-types (cluster-endpoint cluster))
@@ -204,6 +209,47 @@ called with the cluster and the new state after each change."
                                                 (declare (ignore fields))
                                                 (set-state cluster (not (attribute-value cluster 'on-off))))))
     cluster))
+
+;;; ------------------------------------------------------------------
+;;; Boolean State (0x0045): one boolean, for a Contact Sensor (Device
+;;; Library 7.1), whose StateValue is TRUE while the contact is closed.
+;;; The StateChange event is not reported (events are not, yet).
+
+(define-cluster boolean-state (+cluster-boolean-state+ :revision 1)
+  (:attributes
+   (state-value 0 :bool :default nil)))
+
+(defun make-boolean-state-cluster (&key (state-value nil))
+  "A Boolean State cluster holding STATE-VALUE; change it with
+(setf attribute-value), subscribers hear of it."
+  (make-cluster 'boolean-state :state-value state-value))
+
+;;; ------------------------------------------------------------------
+;;; Temperature Measurement (0x0402): MeasuredValue in hundredths of a
+;;; degree Celsius, null while unknown; the bounds likewise.
+
+(define-cluster temperature-measurement (+cluster-temperature-measurement+ :revision 4)
+  (:attributes
+   (measured-value 0 (:nullable :temperature) :default :null)
+   (min-measured-value 1 (:nullable :temperature) :default :null)
+   (max-measured-value 2 (:nullable :temperature) :default :null)
+   (tolerance 3 :uint16 :optional t)))
+
+(defun make-temperature-measurement-cluster (&key (measured-value :null) (min-measured-value :null)
+                                               (max-measured-value :null))
+  "A Temperature Measurement cluster: MEASURED-VALUE and the bounds in
+hundredths of a degree Celsius, or :NULL.  `temperature-hundredths'
+turns degrees into that."
+  (make-cluster 'temperature-measurement :measured-value measured-value
+                                         :min-measured-value min-measured-value
+                                         :max-measured-value max-measured-value))
+
+(defun temperature-hundredths (celsius)
+  "CELSIUS, a real, as the int16 hundredths Temperature Measurement
+carries, clamped to the type's range; anything else is :NULL."
+  (if (realp celsius)
+      (max -32768 (min 32767 (round (* 100 celsius))))
+      :null))
 
 ;;; ------------------------------------------------------------------
 ;;; A whole node
