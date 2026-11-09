@@ -765,15 +765,20 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:attribute-present-p #:cluster-attribute-ids #:cluster-accepted-command-ids #:cluster-generated-command-ids
    #:attribute-value #:read-attribute #:write-attribute #:command-handler #:invoke-cluster-command
    #:endpoint #:endpoint-p #:make-endpoint #:endpoint-id #:endpoint-device-types #:endpoint-clusters #:endpoint-node
+   #:endpoint-parent
    #:add-cluster #:find-cluster
    #:node #:node-p #:make-node #:node-endpoints #:node-listeners
-   #:add-endpoint #:find-endpoint #:node-cluster #:add-node-listener #:remove-node-listener
+   #:add-endpoint #:remove-endpoint #:find-endpoint #:endpoint-parts #:node-cluster
+   #:add-node-listener #:remove-node-listener
+   #:+endpoint-root+ #:+cluster-descriptor+ #:+attribute-parts-list+
    ;; clusters (clusters.lisp)
-   #:+cluster-descriptor+ #:+cluster-basic-information+ #:+cluster-identify+ #:+cluster-on-off+
-   #:+endpoint-root+ #:+device-type-root-node+ #:+device-type-on-off-light+
-   #:+device-type-on-off-plug-in-unit+ #:+device-type-on-off-light-switch+
+   #:+cluster-basic-information+ #:+cluster-bridged-device-basic-information+
+   #:+cluster-identify+ #:+cluster-on-off+
+   #:+device-type-root-node+ #:+device-type-aggregator+ #:+device-type-bridged-node+
+   #:+device-type-on-off-light+ #:+device-type-on-off-plug-in-unit+ #:+device-type-on-off-light-switch+
    #:+data-model-revision+ #:+specification-version+
    #:make-identify-cluster #:make-on-off-cluster #:make-basic-node
+   #:make-aggregator-endpoint #:make-bridged-endpoint #:bridged-device-basic-information
    ;; access control (access.lisp)
    #:+cluster-access-control+ #:+auth-mode-pase+ #:+auth-mode-case+ #:+auth-mode-group+ #:+cat-subject-prefix+
    #:cat-subject #:cat-subject-p #:session-subjects #:acl-entry-grants-p #:node-access-control-entries

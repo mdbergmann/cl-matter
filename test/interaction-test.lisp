@@ -527,6 +527,35 @@ returns the recorder's events cell."
       (run-rig (nr-rig nr) (lambda () nil) :max-rounds 100)
       (is (= 1 (length (car cell)))))))
 
+(test subscribe-sees-endpoints-come-and-go
+  "A bridge adds and removes endpoints: the root's PartsList is reported,
+and the gone endpoint answers UNSUPPORTED_ENDPOINT."
+  (let ((nr (make-node-rig)))
+    (multiple-value-bind (sub cell) (subscribe nr (list (attribute-path nil +cluster-descriptor+ 3)) :min-interval 0 :max-interval 30)
+      (is (= 2 (length (subscription-primed-reports sub))))
+      (let ((hall (make-bridged-endpoint 2 :node-label "Hall" :unique-id "h1"
+                                           :device-types (list (cons +device-type-on-off-light+ 3))
+                                           :clusters (list (make-on-off-cluster)))))
+        (add-endpoint (nr-node nr) hall)
+        (let ((attributes (third (first (wait-reports nr cell 1)))))
+          (is (= 1 (length attributes)))
+          (is (equalp (attribute-path 0 +cluster-descriptor+ 3) (attribute-report-path (first attributes))))
+          (is (equal '(1 2) (attribute-report-value (first attributes)))))
+        ;; the new endpoint is readable, bridged device basic information included
+        (is (string= "Hall" (attribute-report-value (read-one nr (attribute-path 2 +cluster-bridged-device-basic-information+ 5)))))
+        (is (eq t (attribute-report-value (read-one nr (attribute-path 2 +cluster-bridged-device-basic-information+ 17)))))
+        (settle nr :seconds 1)
+        (remove-endpoint (nr-node nr) hall)
+        (let ((attributes (third (second (wait-reports nr cell 2)))))
+          (is (= 1 (length attributes)))
+          (is (equal '(1) (attribute-report-value (first attributes)))))
+        (is (eq :unsupported-endpoint (report-status (read-one nr (attribute-path 2 +cluster-on-off+ 0)))))
+        ;; a change on the gone endpoint reaches nobody
+        (setf (attribute-value (find-cluster hall 'on-off) 'on-off) t)
+        (run-rig (nr-rig nr) (lambda () nil) :max-rounds 60)
+        (is (= 2 (length (car cell)))))
+      (unsubscribe sub))))
+
 (test subscribe-replaces-and-keeps
   (let ((nr (make-node-rig)))
     (let ((first (subscribe nr (list (attribute-path 1 +cluster-on-off+ 0)))))

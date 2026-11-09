@@ -565,19 +565,25 @@ Signals INTERACTION-ERROR for UNSUPPORTED_COMMAND and INVALID_COMMAND."
 ;;; Endpoints and the node
 
 (defstruct (endpoint (:constructor %make-endpoint))
-  "An endpoint: DEVICE-TYPES is a list of (device-type-id . revision)."
+  "An endpoint: DEVICE-TYPES is a list of (device-type-id . revision).
+PARENT is the id of the endpoint this one is a part of -- the aggregator
+of a bridged endpoint, the composed device of a sub-endpoint -- or NIL
+for one directly under the root."
   (id 0)
   (device-types '())
   (clusters '())
+  (parent nil)
   node)
 
 (defmethod print-object ((e endpoint) stream)
   (print-unreadable-object (e stream :type t)
     (format stream "~d (~d cluster~:p)" (endpoint-id e) (length (endpoint-clusters e)))))
 
-(defun make-endpoint (id &key device-types clusters (descriptor t))
-  "Endpoint ID with CLUSTERS; a Descriptor cluster is added unless DESCRIPTOR is NIL."
-  (let ((endpoint (%make-endpoint :id id :device-types device-types)))
+(defun make-endpoint (id &key device-types clusters (descriptor t) parent)
+  "Endpoint ID with CLUSTERS; a Descriptor cluster is added unless
+DESCRIPTOR is NIL.  PARENT, an endpoint id, makes it a part of that
+endpoint (its Descriptor's PartsList lists it)."
+  (let ((endpoint (%make-endpoint :id id :device-types device-types :parent parent)))
     (when descriptor (add-cluster endpoint (make-cluster 'descriptor)))
     (dolist (cluster clusters) (add-cluster endpoint cluster))
     endpoint))
@@ -598,7 +604,9 @@ Signals INTERACTION-ERROR for UNSUPPORTED_COMMAND and INVALID_COMMAND."
 
 (defstruct (node (:constructor %make-node))
   "The data model of one node: its ENDPOINTS, and LISTENERS called with
-(endpoint-id cluster-id attribute-id) when an attribute changes."
+(endpoint-id cluster-id attribute-id) when an attribute changes.  An
+endpoint added or removed is a change of the Descriptor's PartsList on
+the root and on the endpoint's parent, and is heard like one."
   (endpoints '())
   (listeners '()))
 
@@ -607,15 +615,48 @@ Signals INTERACTION-ERROR for UNSUPPORTED_COMMAND and INVALID_COMMAND."
     (dolist (endpoint endpoints) (add-endpoint node endpoint))
     node))
 
+(defconstant +endpoint-root+ 0)
+(defconstant +cluster-descriptor+ #x001D)
+(defconstant +attribute-parts-list+ 3 "The Descriptor's PartsList.")
+
+(defun %parts-list-changed (node endpoint)
+  "ENDPOINT came or went: the PartsLists that listed it have changed."
+  (dolist (id (remove-duplicates (list +endpoint-root+ (endpoint-parent endpoint))))
+    (when id
+      (let ((descriptor (node-cluster node id +cluster-descriptor+)))
+        (when descriptor (%attribute-changed descriptor +attribute-parts-list+))))))
+
 (defun add-endpoint (node endpoint)
+  "Add ENDPOINT to NODE; the PartsLists listing it change."
   (when (find-endpoint node (endpoint-id endpoint))
     (error "~a already has endpoint ~d" node (endpoint-id endpoint)))
   (setf (endpoint-node endpoint) node
         (node-endpoints node) (sort (cons endpoint (node-endpoints node)) #'< :key #'endpoint-id))
+  (%parts-list-changed node endpoint)
   endpoint)
+
+(defun remove-endpoint (node designator)
+  "Remove the endpoint DESIGNATOR (an id or an ENDPOINT) from NODE, with
+every endpoint that is a part of it; the PartsLists listing it change.
+The root endpoint cannot be removed.  Returns the endpoint, or NIL when
+NODE did not have it."
+  (let ((endpoint (if (endpoint-p designator) designator (find-endpoint node designator))))
+    (when (and endpoint (eq node (endpoint-node endpoint)))
+      (when (= +endpoint-root+ (endpoint-id endpoint))
+        (error "the root endpoint cannot be removed from ~a" node))
+      (dolist (part (endpoint-parts node endpoint)) (remove-endpoint node part))
+      (setf (node-endpoints node) (remove endpoint (node-endpoints node))
+            (endpoint-node endpoint) nil)
+      (%parts-list-changed node endpoint)
+      endpoint)))
 
 (defun find-endpoint (node id)
   (find id (node-endpoints node) :key #'endpoint-id))
+
+(defun endpoint-parts (node endpoint)
+  "The endpoints of NODE whose parent is ENDPOINT (an id or an ENDPOINT)."
+  (let ((id (if (endpoint-p endpoint) (endpoint-id endpoint) endpoint)))
+    (remove id (node-endpoints node) :key #'endpoint-parent :test-not #'eql)))
 
 (defun node-cluster (node endpoint-id cluster)
   "The cluster CLUSTER (name or id) on endpoint ENDPOINT-ID, or NIL."

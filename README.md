@@ -74,8 +74,12 @@ and the place to see it used.
   `src/matter/data-model.lisp`, `src/matter/clusters.lisp`,
   `src/matter/interaction.lisp`): every message of chapter 10;
   `define-cluster` for attributes and commands with their types, nodes of
-  endpoints of cluster instances; Descriptor, Basic Information, Identify
-  and On/Off; Read, Write, Invoke and Subscribe served from a node and
+  endpoints of cluster instances, endpoints with parts that come and go
+  (a subscriber sees the PartsList change); Descriptor, Basic
+  Information, Bridged Device Basic Information, Identify and On/Off; the
+  Aggregator and Bridged Node endpoints of a bridge
+  (`make-aggregator-endpoint`, `make-bridged-endpoint`); Read, Write,
+  Invoke and Subscribe served from a node and
   performed against a peer, with wildcard paths, per-path statuses,
   chunked reports, data version filters, timed requests and subscriptions.
   `test/data-model-test.lisp`, `test/interaction-test.lisp`.
@@ -108,7 +112,8 @@ and the place to see it used.
   commissioner's search. `test/discovery-test.lisp`.
 - **Interop**: `examples/lamp-device.lisp` on the real network, driven by
   chip-tool (pairing, On/Off, ACL writes, a second administrator through
-  an opened window, unpair, restart).  The other way round,
+  an opened window, unpair, restart); `examples/bridge-device.lisp`, the
+  same node as a bridge with two lights behind it.  The other way round,
   `examples/find-devices.lisp`, `commission-device.lisp` and
   `control-device.lisp`: the nodes on the network, a real device
   commissioned with its pairing code through the window its first
@@ -239,7 +244,10 @@ advertisement follows its window and fabric table over a loopback
 responder.  `examples/lamp-device.lisp` puts all of it on the real network:
 a lamp on port 5540 that chip-tool commissions with
 `chip-tool pairing code 1 34970112332` and switches with
-`chip-tool onoff toggle 1 1`.
+`chip-tool onoff toggle 1 1`.  `examples/bridge-device.lisp` is the same
+with an Aggregator on endpoint 1 and two bridged lights on 2 and 3, each
+named by its Bridged Device Basic Information; with `BRIDGE_HALL_AFTER`
+one of them comes and goes, for a controller to follow the PartsList.
 
 ```lisp
 (dns-sd:browse "_http._tcp")
@@ -285,8 +293,10 @@ Nothing talks to a real Matter device yet. In the order it will be built:
 - **Interaction model**: events are accepted in requests and never
   reported; no list chunking (an attribute too big for one message is
   reported RESOURCE_EXHAUSTED) and no group writes or invokes. Beyond
-  the commissioning clusters only Descriptor, Basic Information, Identify
-  and On/Off are defined.
+  the commissioning clusters only Descriptor, Basic Information, Bridged
+  Device Basic Information, Identify and On/Off are defined; the
+  Aggregator and Bridged Node device types exist, the bridge's optional
+  Actions cluster does not.
 - **Access control**: the Group auth mode never matches (there are no
   group sessions), the ACL's Extension attribute is not served, and
   Matter 1.4's Access Restriction List is not implemented.
@@ -327,4 +337,4 @@ or from a REPL: `(asdf:test-system :cl-matter)`.
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done. ~~A bridge: Aggregator, Bridged Node, Bridged Device Basic Information, endpoints added and removed on a live node~~ Done.
