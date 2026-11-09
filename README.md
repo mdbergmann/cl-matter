@@ -312,7 +312,12 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   responder cannot run.
 - **Interop**: chip-tool (the Matter SDK's reference controller) commissions
   `examples/lamp-device.lisp`, toggles and reads it, and removes its fabric
-  again (2026-11-05, SDK master on macOS).  cl-matter's commissioner has
+  again (2026-11-05, SDK master on macOS).  It commissions
+  `examples/bridge-device.lisp` too, reads the Aggregator's and the root's
+  PartsList, the bridged endpoints' device types, labels, Reachable and
+  UniqueID, toggles both lights, renames one, and a subscription on the
+  Aggregator's PartsList follows the hall light as it is removed and added
+  every few seconds (2026-11-09, SDK a0d9973d).  cl-matter's commissioner has
   commissioned one real device, an Eve Energy plug on Thread behind Apple
   border routers, as its third administrator through the window Apple
   Home opened, and reads and switches it from the saved state
@@ -330,6 +335,24 @@ scripts/run-tests.sh --sbcl   # SBCL
 ```
 
 or from a REPL: `(asdf:test-system :cl-matter)`.
+
+For the interop checks, chip-tool (the Matter SDK's controller) is built
+from the SDK into the git-ignored `tools/` directory and linked as
+`tools/chip-tool`:
+
+```
+cd tools && git clone --depth 1 https://github.com/project-chip/connectedhomeip.git && cd connectedhomeip
+python3 scripts/checkout_submodules.py --shallow --platform darwin
+source scripts/bootstrap.sh                       # pigweed, gn, a Python venv; once
+./scripts/examples/gn_build_example.sh examples/chip-tool out/chip-tool
+ln -s connectedhomeip/out/chip-tool/chip-tool ../chip-tool
+```
+
+The debug build is the one to make: with `is_debug=false` clang spent
+hours on the generated `DataModelLogger.cpp` (Xcode 27.2, 2026-11-09).
+chip-tool keeps its fabric in `/tmp/chip_tool_kvs` unless
+`--storage-directory` says otherwise, and its options go after the
+command: `tools/chip-tool pairing code 1 34970112332 --storage-directory /tmp/kvs`.
 
 ## Plan
 
