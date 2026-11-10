@@ -384,8 +384,8 @@ second value."
                      (getf (add-noc :noc-value (certificate-octets* (make-node-certificate :public-key public-key :node-id 5 :fabric-id #x1D
                                                                                           :issuer (fabric-rcac other) :issuer-keypair root)))
                            :status-code)))))
-          ;; at last
-          (let ((response (add-noc :case-admin-subject #xFFFFFFFD0001ABCD)))
+          ;; at last; the ICAC as Apple Home sends it without an intermediate CA: there, and empty
+          (let ((response (add-noc :case-admin-subject #xFFFFFFFD0001ABCD :icac-value (octets-from 0 0))))
             (is (= +noc-status-ok+ (getf response :status-code)))
             (is (= 1 (getf response :fabric-index))))
           (is (= 1 (length (device-fabrics device))))

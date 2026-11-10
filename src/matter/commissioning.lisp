@@ -795,6 +795,12 @@ the next time to look."
           (when fabric-index (list :fabric-index fabric-index))
           (when text (list :debug-text text))))
 
+;; An administrator without an intermediate CA may leave ICACValue out or
+;; send it empty; Apple Home sends it empty.
+(defun %icac-value (fields)
+  (let ((icac (getf fields :icac-value)))
+    (and icac (plusp (length icac)) icac)))
+
 (defun %add-noc (device cluster fields)
   (declare (ignore cluster))
   (let* ((session (%session))
@@ -824,7 +830,7 @@ the next time to look."
                (unless (operational-node-id-p (certificate-node-id noc))
                  (return-from %add-noc (%noc-response +noc-status-invalid-node-op-id+)))
                (let ((fabric (handler-case
-                                 (make-fabric :rcac root :icac (getf fields :icac-value) :noc noc
+                                 (make-fabric :rcac root :icac (%icac-value fields) :noc noc
                                               :operational-keypair keypair :epoch-key ipk
                                               :vendor-id (getf fields :admin-vendor-id))
                                (certificate-error (e)
@@ -874,7 +880,7 @@ the next time to look."
         (unless (equalp (certificate-public-key noc) (p256-keypair-public keypair))
           (return-from %update-noc (%noc-response +noc-status-invalid-public-key+)))
         (let ((new (handler-case
-                       (make-fabric :rcac (fabric-rcac fabric) :icac (getf fields :icac-value) :noc noc
+                       (make-fabric :rcac (fabric-rcac fabric) :icac (%icac-value fields) :noc noc
                                     :operational-keypair keypair :epoch-key (fabric-epoch-key fabric)
                                     :vendor-id (fabric-vendor-id fabric) :label (fabric-label fabric)
                                     :index (fabric-index fabric))
