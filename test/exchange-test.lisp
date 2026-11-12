@@ -715,9 +715,22 @@ reliable ones among them are still acknowledged."
 (test pase-wrong-passcode
   (let ((rig (make-rig)))
     (multiple-value-bind (ca cb) (channels rig :pase-passcode *passcode* :pase-salt *salt* :pase-iterations 1000)
-      (let ((hs (finish rig (start-pase ca "mem" (rig-b-port rig) :passcode 12341234))))
+      (let* ((failed '())
+             (hs (progn
+                   (setf (secure-channel-on-handshake-failed ca) (lambda (&rest args) (push (cons :a args) failed))
+                         (secure-channel-on-handshake-failed cb) (lambda (&rest args) (push (cons :b args) failed)))
+                   (finish rig (start-pase ca "mem" (rig-b-port rig) :passcode 12341234)))))
         ;; the initiator finds cB wrong in Pake2 and tells the responder with a status report
         (is (handshake-failed-p hs))
+        ;; the responder's channel is told, of the handshake the peer began with it; ours is not
+        (is (= 1 (length failed)))
+        (destructuring-bind (who channel handshake error) (first failed)
+          (is (eq :b who))
+          (is (eq cb channel))
+          (is (eq :pase (handshake-kind handshake)))
+          (is (eq :responder (handshake-role handshake)))
+          (is (handshake-failed-p handshake))
+          (is (typep error 'error)))
         (is (typep (handshake-error hs) 'pase-error))
         (is (not (typep (handshake-error hs) 'pase-peer-failure)))
         (is (= +secure-channel-status-invalid-parameter+ (pase-error-protocol-code (handshake-error hs))))

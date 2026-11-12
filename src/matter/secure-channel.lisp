@@ -55,7 +55,8 @@ and ITERATIONS, is accepted from commissioners while set; FABRICS are the
 ones peers may open CASE sessions on; RESUMPTIONS the CASE-RESUMPTIONs we
 hold for both roles.  ON-SESSION is called with the channel and each
 session a peer establishes with us; ON-SESSION-CLOSED with each one that
-goes away."
+goes away; ON-HANDSHAKE-FAILED with the channel, the HANDSHAKE a peer
+began with us and the error it failed with."
   manager
   pase-verifier
   pase-salt
@@ -64,15 +65,17 @@ goes away."
   (resumptions '() :type list)
   (handshakes '() :type list)
   on-session
-  on-session-closed)
+  on-session-closed
+  on-handshake-failed)
 
 (defun make-secure-channel (manager &key fabrics pase-verifier pase-passcode pase-salt pase-iterations
-                                      on-session on-session-closed)
+                                      on-session on-session-closed on-handshake-failed)
   "The Secure Channel on exchange MANAGER.  A commissioning window opens
 with PASE-VERIFIER (or PASE-PASSCODE, turned into one) plus PASE-SALT and
 PASE-ITERATIONS; FABRICS makes us a CASE responder."
   (let ((channel (%make-secure-channel :manager manager :fabrics fabrics
-                                       :on-session on-session :on-session-closed on-session-closed)))
+                                       :on-session on-session :on-session-closed on-session-closed
+                                       :on-handshake-failed on-handshake-failed)))
     (when (or pase-verifier pase-passcode)
       (set-pase-verifier channel (or pase-verifier (spake2p-verifier pase-passcode pase-salt pase-iterations))
                          pase-salt pase-iterations))
@@ -153,7 +156,10 @@ with SALT and ITERATIONS).  NIL closes it."
     (when (and report (exchange-open-p (handshake-exchange handshake))
                (null (exchange-outstanding (handshake-exchange handshake))))
       (exchange-send (handshake-exchange handshake) +opcode-status-report+ (encode-status-report report)))
-    (%handshake-finish handshake)))
+    (%handshake-finish handshake)
+    (let ((channel (handshake-channel handshake)))
+      (when (and (eq :responder (handshake-role handshake)) (secure-channel-on-handshake-failed channel))
+        (funcall (secure-channel-on-handshake-failed channel) channel handshake error)))))
 
 (defun %handshake-session (handshake)
   "The secured SESSION a complete handshake yields."

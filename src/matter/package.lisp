@@ -661,6 +661,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:secure-channel-handshakes
    #:secure-channel-on-session
    #:secure-channel-on-session-closed
+   #:secure-channel-on-handshake-failed
    #:secure-channel-sessions
    #:set-pase-verifier #:secure-channel-pase-verifier #:secure-channel-pase-salt #:secure-channel-pase-iterations
    #:find-resumption
@@ -802,6 +803,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:subscription-active-p #:unsubscribe
    #:interaction-model #:interaction-model-p #:make-interaction-model #:interaction-model-manager
    #:interaction-model-node #:interaction-model-subscriptions #:interaction-model-client-subscriptions
+   #:interaction-model-max-subscription-interval #:interaction-model-on-subscription
    #:interaction-model-now #:interaction-model-close
    #:interaction #:interaction-p #:interaction-kind #:interaction-exchange #:interaction-state
    #:interaction-result #:interaction-condition #:interaction-running-p #:interaction-complete-p

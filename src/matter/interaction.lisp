@@ -36,7 +36,8 @@
 message and the headers fit in the 1280 of a UDP datagram beside it.")
 
 (defparameter *max-subscription-interval* 3600
-  "The longest MaxInterval, seconds, we grant a subscriber (the specification's hour).")
+  "The longest MaxInterval, seconds, we grant a subscriber (the specification's hour);
+an INTERACTION-MODEL made with :MAX-SUBSCRIPTION-INTERVAL has its own.")
 
 (defparameter *subscription-grace* 5.0d0
   "Seconds past MaxInterval a subscriber waits for a report before giving up.")
@@ -73,18 +74,28 @@ subscription and a reason when it ends."
 (defun subscription-active-p (subscription) (eq :active (subscription-state subscription)))
 
 (defstruct (interaction-model (:constructor %make-interaction-model))
-  "Protocol 0x0001 on MANAGER, serving NODE (NIL: client only)."
+  "Protocol 0x0001 on MANAGER, serving NODE (NIL: client only).
+MAX-SUBSCRIPTION-INTERVAL, seconds, is the longest MaxInterval a subscriber
+is granted, NIL for *MAX-SUBSCRIPTION-INTERVAL*: without changes a report
+goes out that often, and a subscriber that misses it knows we are gone.
+ON-SUBSCRIPTION is called with the model, :SUBSCRIBED or :DROPPED, the
+SERVER-SUBSCRIPTION and, for :DROPPED, the reason, a string."
   manager
   node
+  max-subscription-interval
+  on-subscription
   (subscriptions '())                   ; SERVER-SUBSCRIPTIONs
   (client-subscriptions '())            ; SUBSCRIPTIONs
   (next-subscription-id (random (ash 1 32)))
   listener
   timer)
 
-(defun make-interaction-model (manager &key node)
-  "Serve NODE's data model to the peers of MANAGER and interact with theirs."
-  (let ((model (%make-interaction-model :manager manager :node node)))
+(defun make-interaction-model (manager &key node max-subscription-interval on-subscription)
+  "Serve NODE's data model to the peers of MANAGER and interact with theirs.
+MAX-SUBSCRIPTION-INTERVAL and ON-SUBSCRIPTION as the INTERACTION-MODEL says."
+  (let ((model (%make-interaction-model :manager manager :node node
+                                        :max-subscription-interval max-subscription-interval
+                                        :on-subscription on-subscription)))
     (register-protocol-handler manager +protocol-interaction-model+
                                (lambda (exchange event &rest data) (%responder-event model exchange event data)))
     (when node
@@ -449,7 +460,8 @@ writable, and be theirs to write (in that order of refusal)."
     (let ((subscription (%make-server-subscription
                          :id (%next-subscription-id model) :session session :paths paths
                          :min-interval floor
-                         :max-interval (max floor (min ceiling *max-subscription-interval*))
+                         :max-interval (max floor (min ceiling (or (interaction-model-max-subscription-interval model)
+                                                                   *max-subscription-interval*)))
                          :fabric-filtered (subscribe-request-fabric-filtered message)
                          :last-report (interaction-model-now model))))
       (setf (server-state-kind state) :subscribe
@@ -498,7 +510,8 @@ writable, and be theirs to write (in that order of refusal)."
                 (exchange-close exchange)
                 (setf (server-subscription-last-report subscription) (interaction-model-now model))
                 (push subscription (interaction-model-subscriptions model))
-                (%trace-model model "subscribed ~a" subscription)))))
+                (%trace-model model "subscribed ~a" subscription)
+                (%tell-subscription model :subscribed subscription)))))
       (t (%im-fail :invalid-action "unexpected StatusResponse ~a on ~a" (im-status-name status) exchange)))))
 
 ;;; ------------------------------------------------------------------
@@ -514,9 +527,14 @@ writable, and be theirs to write (in that order of refusal)."
     ;; the timer sleeps until the next maximum interval: wake it for the minimum
     (when any (wake-timer (interaction-model-manager model) (interaction-model-timer model)))))
 
+(defun %tell-subscription (model event subscription &rest reason)
+  (when (interaction-model-on-subscription model)
+    (apply (interaction-model-on-subscription model) model event subscription reason)))
+
 (defun %drop-server-subscription (model subscription why)
   (%trace-model model "dropped ~a: ~a" subscription why)
   (setf (interaction-model-subscriptions model) (remove subscription (interaction-model-subscriptions model)))
+  (%tell-subscription model :dropped subscription why)
   (let ((exchange (server-subscription-exchange subscription)))
     (when (and exchange (not (exchange-closed-p exchange))) (exchange-abort exchange))
     (setf (server-subscription-exchange subscription) nil)))

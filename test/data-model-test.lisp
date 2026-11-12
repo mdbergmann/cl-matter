@@ -650,7 +650,8 @@ stay silent."
     ;; a controller renames the device
     (write-attribute info 5 (tlv nil :string "Küche"))
     (is (string= "Küche" (attribute-value info 'node-label)))
-    ;; an endpoint added or removed is a PartsList change on the root and the parent
+    ;; an endpoint added or removed is a PartsList change on the root and the parent;
+    ;; an added one is then heard attribute by attribute, its values untouched
     (let ((heard '())
           (root-version (cluster-data-version root))
           (aggregator-version (cluster-data-version aggregator)))
@@ -658,8 +659,15 @@ stay silent."
       (let ((hall (make-bridged-endpoint 3 :parent 1 :node-label "Hall" :unique-id "h1"
                                            :device-types (list (cons +device-type-on-off-light+ 3))
                                            :clusters (list (make-on-off-cluster)))))
-        (add-endpoint node hall)
-        (is (equal (list (list 0 +cluster-descriptor+ 3) (list 1 +cluster-descriptor+ 3)) (reverse heard)))
+        (let ((versions (mapcar #'cluster-data-version (endpoint-clusters hall))))
+          (add-endpoint node hall)
+          (is (equal (append (list (list 0 +cluster-descriptor+ 3) (list 1 +cluster-descriptor+ 3))
+                             (loop :for cluster :in (endpoint-clusters hall)
+                                   :append (loop :for id :in (cluster-attribute-ids cluster)
+                                                 :collect (list 3 (cluster-id cluster) id))))
+                     (reverse heard)))
+          (is (member (list 3 +cluster-on-off+ 0) heard :test #'equal))
+          (is (equal versions (mapcar #'cluster-data-version (endpoint-clusters hall)))))
         (is (/= root-version (cluster-data-version root)))
         (is (/= aggregator-version (cluster-data-version aggregator)))
         (is (equal '(1 2 3) (attribute-value root 'parts-list)))
@@ -682,7 +690,9 @@ stay silent."
     (let ((heard '()))
       (add-node-listener node (lambda (e c a) (push (list e c a) heard)))
       (add-endpoint node (make-endpoint 9))
-      (is (equal (list (list 0 +cluster-descriptor+ 3)) heard))
+      (is (equal (list 0 +cluster-descriptor+ 3) (first (reverse heard))))
+      (is (equal '(9) (remove-duplicates (mapcar #'first (rest (reverse heard))))))
+      (is (equal (list +cluster-descriptor+) (remove-duplicates (mapcar #'second (rest (reverse heard))))))
       (remove-endpoint node 9))
     ;; removing the aggregator takes its parts with it
     (is (eq (find-endpoint node 1) (remove-endpoint node 1)))

@@ -625,7 +625,9 @@ endpoint (its Descriptor's PartsList lists it)."
   "The data model of one node: its ENDPOINTS, and LISTENERS called with
 (endpoint-id cluster-id attribute-id) when an attribute changes.  An
 endpoint added or removed is a change of the Descriptor's PartsList on
-the root and on the endpoint's parent, and is heard like one."
+the root and on the endpoint's parent, and is heard like one; an added
+endpoint is then heard attribute by attribute, as everything on it is new
+to whoever listens."
   (endpoints '())
   (listeners '()))
 
@@ -645,13 +647,25 @@ the root and on the endpoint's parent, and is heard like one."
       (let ((descriptor (node-cluster node id +cluster-descriptor+)))
         (when descriptor (%attribute-changed descriptor +attribute-parts-list+))))))
 
+(defun %endpoint-appeared (node endpoint)
+  "ENDPOINT is new on NODE: the listeners hear each of its attributes, so a
+subscriber whose wildcard covers them is told the endpoint as a whole, not
+only that the PartsLists grew.  Nothing changed its value: the data
+versions stay."
+  (dolist (cluster (endpoint-clusters endpoint))
+    (dolist (attribute-id (cluster-attribute-ids cluster))
+      (dolist (listener (node-listeners node))
+        (funcall listener (endpoint-id endpoint) (cluster-id cluster) attribute-id)))))
+
 (defun add-endpoint (node endpoint)
-  "Add ENDPOINT to NODE; the PartsLists listing it change."
+  "Add ENDPOINT to NODE; the PartsLists listing it change, and the node's
+listeners hear every attribute of the new endpoint."
   (when (find-endpoint node (endpoint-id endpoint))
     (error "~a already has endpoint ~d" node (endpoint-id endpoint)))
   (setf (endpoint-node endpoint) node
         (node-endpoints node) (sort (cons endpoint (node-endpoints node)) #'< :key #'endpoint-id))
   (%parts-list-changed node endpoint)
+  (%endpoint-appeared node endpoint)
   endpoint)
 
 (defun remove-endpoint (node designator)

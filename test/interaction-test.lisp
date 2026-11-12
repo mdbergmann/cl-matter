@@ -529,7 +529,7 @@ returns the recorder's events cell."
 
 (test subscribe-sees-endpoints-come-and-go
   "A bridge adds and removes endpoints: the root's PartsList is reported,
-and the gone endpoint answers UNSUPPORTED_ENDPOINT."
+with the new endpoint's own, and the gone endpoint answers UNSUPPORTED_ENDPOINT."
   (let ((nr (make-node-rig)))
     (multiple-value-bind (sub cell) (subscribe nr (list (attribute-path nil +cluster-descriptor+ 3)) :min-interval 0 :max-interval 30)
       (is (= 2 (length (subscription-primed-reports sub))))
@@ -538,9 +538,12 @@ and the gone endpoint answers UNSUPPORTED_ENDPOINT."
                                            :clusters (list (make-on-off-cluster)))))
         (add-endpoint (nr-node nr) hall)
         (let ((attributes (third (first (wait-reports nr cell 1)))))
-          (is (= 1 (length attributes)))
+          (is (= 2 (length attributes)))
           (is (equalp (attribute-path 0 +cluster-descriptor+ 3) (attribute-report-path (first attributes))))
-          (is (equal '(1 2) (attribute-report-value (first attributes)))))
+          (is (equal '(1 2) (attribute-report-value (first attributes))))
+          ;; the new endpoint's PartsList is what the wildcard covers on it
+          (is (equalp (attribute-path 2 +cluster-descriptor+ 3) (attribute-report-path (second attributes))))
+          (is (equal '() (attribute-report-value (second attributes)))))
         ;; the new endpoint is readable, bridged device basic information included
         (is (string= "Hall" (attribute-report-value (read-one nr (attribute-path 2 +cluster-bridged-device-basic-information+ 5)))))
         (is (eq t (attribute-report-value (read-one nr (attribute-path 2 +cluster-bridged-device-basic-information+ 17)))))
@@ -555,6 +558,69 @@ and the gone endpoint answers UNSUPPORTED_ENDPOINT."
         (run-rig (nr-rig nr) (lambda () nil) :max-rounds 60)
         (is (= 2 (length (car cell)))))
       (unsubscribe sub))))
+
+(test subscribe-wildcard-is-told-a-new-endpoint-whole
+  "A subscriber to everything hears every attribute of an endpoint a bridge
+adds, as Apple Home needs it to show the device: it does not read after a
+PartsList report."
+  (let ((nr (make-node-rig)))
+    (multiple-value-bind (sub cell) (subscribe nr (list (attribute-path nil nil nil)) :min-interval 0 :max-interval 30)
+      (let ((hall (make-bridged-endpoint 2 :node-label "Hall" :unique-id "h1"
+                                           :device-types (list (cons +device-type-on-off-light+ 3))
+                                           :clusters (list (make-on-off-cluster :on-off t)))))
+        (add-endpoint (nr-node nr) hall)
+        (let* ((reports (wait-reports nr cell 1))
+               (attributes (loop :for report :in reports :append (third report)))
+               (of-hall (remove 2 attributes :test-not #'eql
+                                             :key (lambda (r) (attribute-path-endpoint (attribute-report-path r))))))
+          (flet ((value (cluster attribute)
+                   (let ((report (find (attribute-path 2 cluster attribute) of-hall
+                                       :key #'attribute-report-path :test #'equalp)))
+                     (is (not (null report)) "no report of ~a/~a on the new endpoint" cluster attribute)
+                     (and report (attribute-report-value report)))))
+            (is (equal '(1 2) (attribute-report-value
+                               (find (attribute-path 0 +cluster-descriptor+ 3) attributes
+                                     :key #'attribute-report-path :test #'equalp))))
+            ;; every attribute of every cluster of the endpoint, once
+            (is (= (loop :for cluster :in (endpoint-clusters hall)
+                         :sum (length (cluster-attribute-ids cluster)))
+                   (length of-hall)))
+            (is (eq t (value +cluster-on-off+ 0)))
+            (is (string= "Hall" (value +cluster-bridged-device-basic-information+ 5)))
+            (is (equal (list +cluster-descriptor+ +cluster-bridged-device-basic-information+ +cluster-on-off+)
+                       (value +cluster-descriptor+ 1))))))
+      (unsubscribe sub))))
+
+(test subscribe-interval-and-callback-of-a-model
+  "A model with a maximum subscription interval of its own grants no longer
+one, and tells its ON-SUBSCRIPTION of subscribers coming and going."
+  (let ((nr (make-node-rig))
+        (heard '()))
+    (setf (interaction-model-max-subscription-interval (nr-b nr)) 5
+          (interaction-model-on-subscription (nr-b nr))
+          (lambda (model event subscription &rest reason)
+            (push (list* model event subscription reason) heard)))
+    (multiple-value-bind (sub cell) (subscribe nr (list (attribute-path 1 +cluster-on-off+ 0)) :min-interval 1 :max-interval 600)
+      (is (= 5 (subscription-max-interval sub)))
+      (let ((served (first (interaction-model-subscriptions (nr-b nr)))))
+        (is (= 5 (server-subscription-max-interval served)))
+        (is (equal (list (list (nr-b nr) :subscribed served)) heard))
+        ;; the keep-alive report comes at the model's interval, not the asked one
+        (let ((t0 (now nr)))
+          (destructuring-bind (at subscription attributes) (first (wait-reports nr cell 1))
+            (declare (ignore subscription))
+            (is (null attributes))
+            (is (<= 4.5 (- at t0) 5.5) "reported ~,2f s after subscribing" (- at t0))))
+        ;; a floor above the model's interval wins, as the specification has it
+        (setf heard '())
+        (let ((second (subscribe nr (list (attribute-path 1 +cluster-on-off+ 0)) :min-interval 8 :max-interval 600)))
+          (is (= 8 (subscription-max-interval second)))
+          ;; the earlier subscription of the same peer went, the new one came
+          (destructuring-bind (came went) heard
+            (is (eq :subscribed (second came)))
+            (is (eq :dropped (second went)))
+            (is (eq served (third went)))
+            (is (string= "replaced" (fourth went)))))))))
 
 (test subscribe-replaces-and-keeps
   (let ((nr (make-node-rig)))
