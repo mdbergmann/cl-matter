@@ -16,8 +16,15 @@ makes Thread devices reachable as ordinary IPv6 nodes.
 
 ## Status
 
-Early, but a cl-matter lamp is commissioned, controlled and
-re-administered by chip-tool, and comes back commissioned after a restart.
+Early, but in daily use on the device side: a cl-matter **bridge** runs a
+KNX house in Apple Home -- lights, window contacts, thermostats, blinds --
+as the Matter side of [Chipi](https://github.com/mdbergmann/chipi)'s
+`binding-matter`, on AmiLisp, since 2026-11-11 (see
+[In use](#in-use-a-bridge-in-apple-home)). Before that a cl-matter lamp was
+commissioned, controlled and re-administered by chip-tool, and came back
+commissioned after a restart; on the controller side cl-matter's
+commissioner has commissioned and switched one real device.
+
 Layer by layer, bottom up; every layer's test file is its specification
 and the place to see it used.
 
@@ -67,7 +74,10 @@ and the place to see it used.
   retransmission on the backoff, duplicate suppression) from one poll loop
   over a transport; the Secure Channel carries PASE and CASE on it,
   installs the sessions, remembers resumption state, answers BUSY, closes
-  sessions. Application protocols are handler functions per protocol id.
+  sessions, and tells the application of each session a peer opens
+  (`:on-session`), each that goes (`:on-session-closed`) and each handshake
+  a peer began that failed (`:on-handshake-failed`). Application protocols
+  are handler functions per protocol id.
   `test/exchange-test.lisp` drives two nodes over an in-memory network
   with a stepped clock and over loopback UDP.
 - **Interaction Model** (`src/matter/interaction-codec.lisp`,
@@ -75,7 +85,9 @@ and the place to see it used.
   `src/matter/interaction.lisp`): every message of chapter 10;
   `define-cluster` for attributes and commands with their types, nodes of
   endpoints of cluster instances, endpoints with parts that come and go
-  (a subscriber sees the PartsList change); Descriptor, Basic
+  (a subscriber sees the PartsList change and is then told every attribute
+  of a new endpoint, so a hub shows a device added to a live bridge);
+  Descriptor, Basic
   Information, Bridged Device Basic Information, Identify, On/Off,
   Boolean State, Temperature Measurement, Window Covering and Thermostat
   (heating only); the
@@ -84,6 +96,10 @@ and the place to see it used.
   Invoke and Subscribe served from a node and
   performed against a peer, with wildcard paths, per-path statuses,
   chunked reports, data version filters, timed requests and subscriptions.
+  A served model can cap the report interval it grants
+  (`:max-subscription-interval`) and tell the application of subscriptions
+  that come and go (`:on-subscription`); `attribute-write-handler` is the
+  hook a peer's write of an attribute runs.
   `test/data-model-test.lisp`, `test/interaction-test.lisp`.
 - **Attestation** (`src/matter/attestation.lisp`): attestation and NOCSR
   elements, the DAC-signed signature, PKCS#10 CSRs, the certification
@@ -120,6 +136,8 @@ and the place to see it used.
   `control-device.lisp`: the nodes on the network, a real device
   commissioned with its pairing code through the window its first
   administrator opened, and read and switched later from the saved state.
+  Apple Home commissions and runs the bridge that Chipi builds on all of
+  the above.
 
 The API in sketches, bottom up (each one is a call sequence from the
 layer's test file):
@@ -221,6 +239,60 @@ layer's test file):
 ```
 
 ```lisp
+;; a bridge: an Aggregator on endpoint 1, one Bridged Node per device behind it
+(defvar *node* (cl-matter:make-basic-node
+                :vendor-name "ACME" :vendor-id #xFFF1 :product-name "Bridge" :product-id #x8000
+                :node-label "Lisp bridge"
+                :endpoints (list (cl-matter:make-aggregator-endpoint 1))))
+(defvar *kitchen* (cl-matter:make-bridged-endpoint
+                   2 :parent 1
+                     :node-label "Kitchen"                  ; the name the controller shows
+                     :unique-id "kitchen-light"             ; what it keeps the device by, with the endpoint id
+                     :device-types (list (cons cl-matter:+device-type-on-off-light+ 3))
+                     :clusters (list (cl-matter:make-identify-cluster)
+                                     (cl-matter:make-on-off-cluster :on-change #'switch-kitchen))))
+;; endpoints come and go on the live node: the PartsLists change, and a subscriber
+;; is told every attribute of a new endpoint
+(cl-matter:add-endpoint *node* *kitchen*)
+(cl-matter:remove-endpoint *node* 2)
+;; the device behind it cannot be reached right now: controllers grey it out
+(setf (cl-matter:attribute-value (cl-matter:bridged-device-basic-information *kitchen*) :reachable) nil)
+;; the other clusters for bridged devices; the application does the acting in the callbacks
+;; and reports what is with (setf attribute-value), which runs none of them
+(cl-matter:make-boolean-state-cluster :state-value t)                    ; a contact, true while closed
+(cl-matter:make-temperature-measurement-cluster :measured-value 2150)    ; hundredths of a degree
+(cl-matter:make-window-covering-cluster
+ :features '(:lift :position-aware-lift :tilt :position-aware-tilt)      ; 10000 is closed
+ :on-move (lambda (cluster direction) ...)                               ; :open, :close, :stop
+ :on-lift (lambda (cluster percent100ths) ...) :on-tilt (lambda (cluster percent100ths) ...))
+(cl-matter:make-thermostat-cluster                                       ; heating only
+ :local-temperature 2010 :occupied-heating-setpoint 2100
+ :on-setpoint-change (lambda (cluster hundredths) ...)
+ :on-system-mode-change (lambda (cluster mode) ...))                     ; 0 Off, 4 Heat
+;; a bridge that hubs should notice restarting, and that says who comes and goes
+(cl-matter:make-interaction-model *m* :node *node*
+  :max-subscription-interval 60          ; a report at least this often, whatever the subscriber asks for
+  :on-subscription (lambda (model event subscription &rest reason) ...))   ; :subscribed / :dropped
+(cl-matter:make-secure-channel *m*
+  :on-session (lambda (channel session) ...) :on-session-closed (lambda (channel session) ...)
+  :on-handshake-failed (lambda (channel handshake error) ...))             ; (handshake-kind h): :pase / :case
+;; the application's side of the fabric table and the window
+(cl-matter:remove-device-fabric *device* 1)                 ; by index: that administrator loses the node
+(cl-matter:open-commissioning-window *device* :timeout 900) ; +max-commissioning-timeout+
+(cl-matter:close-commissioning-window *device*)
+```
+
+```lisp
+;; running a node: one thread owns the manager and polls it; everything that touches
+;; sessions, exchanges or the served data model runs on that thread, callbacks included
+(loop :while *running*
+      :do (cl-matter:exchange-manager-poll *m* :timeout 0.05d0)   ; one datagram, then the timers
+          (run-what-other-threads-queued))                        ; e.g. (setf attribute-value) from the house
+;; MAKE-EXCHANGE-MANAGER :trace takes a function of (format &rest args): every message,
+;; handshake, subscription and commissioning step as a line, for when a hub says nothing
+```
+
+```lisp
 ;; the device on the air: _matterc._udp while the window is open (discriminator, VP, CM
 ;; in subtypes and TXT), _matter._tcp per fabric from AddNOC on; follows the device by itself
 (cl-matter:start-device-advertising *device* :device-name "Lamp"
@@ -250,6 +322,9 @@ a lamp on port 5540 that chip-tool commissions with
 with an Aggregator on endpoint 1 and two bridged lights on 2 and 3, each
 named by its Bridged Device Basic Information; with `BRIDGE_HALL_AFTER`
 one of them comes and goes, for a controller to follow the PartsList.
+A complete bridge with the threading around it is Chipi's
+`bindings/matter/`: `matter-actors.lisp` is the poll loop as an actor,
+`matter-bridge.lisp` the node, the device and the callbacks.
 
 ```lisp
 (dns-sd:browse "_http._tcp")
@@ -278,15 +353,55 @@ loopback.
 ;; => 42, T
 ```
 
+## In use: a bridge in Apple Home
+
+What running against Apple Home (iOS and a home hub, 2026-11) showed, for
+whoever builds a device or bridge on cl-matter:
+
+- **Pairing.** The Home app takes the manual pairing code or the QR code
+  and, with `test-attestation-credentials`, calls the node an *Uncertified
+  Accessory* and offers *Add Anyway*. It has no intermediate CA and sends
+  AddNOC's optional ICACValue empty rather than leaving it out; an empty
+  one is taken as none.
+- **Two fabrics.** One home adds itself as two fabrics, vendor ids #x1349
+  and #x1384; a `device`'s default of five fabrics is two homes and a
+  spare.
+- **Subscriptions.** The hub subscribes with wildcards and asks for a
+  maximum interval of 600 s. After a restart of the node its session is
+  dead and it only finds out when a report is overdue, so the displayed
+  state is stale for that long: grant less with
+  `:max-subscription-interval` (Chipi grants 60). It then opens a new
+  session, resumed from the records in the state file, and subscribes
+  again; nothing is paired anew.
+- **Start with the whole data model.** A commissioned hub is back within a
+  second of the node answering. A bridged endpoint that is not there yet
+  is, to the hub, a device that was removed: it drops room, name and
+  automations and adds the device as new a moment later. Build the node
+  first, then poll.
+- **Endpoint ids are identity.** The hub keeps a bridged device by its
+  endpoint id (and UniqueID): never give an id to another device, and give
+  a device the id it had. Keeping that map is the application's job.
+- **Endpoints added later** appear in the app without re-pairing, since
+  `add-endpoint` reports the new endpoint whole.
+- **Reachable.** Setting `reachable` of Bridged Device Basic Information
+  to false is how a bridge says the device behind it does not answer;
+  the app then shows it as not responding instead of its last state.
+- **OTA.** The hub writes to the OTA Software Update Requestor cluster
+  (#x002A), which is not there, and takes the refusal.
+- **The window.** A device opens its commissioning window at a start
+  without fabrics. When the last fabric is removed while it runs, the
+  window stays closed: `open-commissioning-window`, or a restart.
+- **IPv6 and mDNS** are needed for all of it, so this is AmiLisp today.
+
 ## What's missing
 
-Nothing talks to a real Matter device yet. In the order it will be built:
+In the order it will be built:
 
 - **Running a node**: the exchange manager is single-threaded and
-  polled (`exchange-manager-poll` / `exchange-manager-run`); there is no
-  thread wrapper yet, no TCP transport, no message-counter
-  synchronisation for group messages, and sessions never expire on their
-  own.
+  polled (`exchange-manager-poll` / `exchange-manager-run`); the thread
+  around it is the application's (the sketch above), there is no TCP
+  transport, no message-counter synchronisation for group messages, and
+  sessions never expire on their own.
 - **Certificates**: the PAA trust store starts with the SDK's test PAAs
   only; the CSA's production roots (the Distributed Compliance Ledger)
   must be added with `add-trusted-paa`. Revocation is not checked.
@@ -298,22 +413,25 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   the commissioning clusters only Descriptor, Basic Information, Bridged
   Device Basic Information, Identify, On/Off, Boolean State,
   Temperature Measurement, Window Covering and Thermostat (heating only)
-  are defined; the
+  are defined -- no Level Control, so no dimmable light, and no OTA
+  requestor; the
   Aggregator and Bridged Node device types exist, the bridge's optional
   Actions cluster does not.
 - **Access control**: the Group auth mode never matches (there are no
   group sessions), the ACL's Extension attribute is not served, and
   Matter 1.4's Access Restriction List is not implemented.
 - **Commissioning**: the Network Commissioning cluster is Ethernet only
-  (no Wi-Fi or Thread configuration), and group key sets are neither
-  served nor kept.
+  (no Wi-Fi or Thread configuration), group key sets are neither
+  served nor kept, and a device whose last fabric is removed does not open
+  its window again by itself. The attestation credentials are the SDK's
+  test ones; there is no way to a certified device from here.
 - **Discovery**: the advertisements are made and read, but the device does
   not keep advertising with `CM=0` after commissioning (extended
   discovery), the rotating device identifier is passed in rather than
   derived, and the responder answers on one interface's addresses.
-- **SBCL backend**: multicast membership and interface enumeration are
-  still missing, so on SBCL the querier uses legacy unicast and the
-  responder cannot run.
+- **SBCL backend**: IPv6, multicast membership and interface enumeration
+  are still missing, so on SBCL the querier uses legacy unicast, the
+  responder cannot run, and a device or bridge is for loopback tests only.
 - **Interop**: chip-tool (the Matter SDK's reference controller) commissions
   `examples/lamp-device.lisp`, toggles and reads it, and removes its fabric
   again (2026-11-05, SDK master on macOS).  It commissions
@@ -328,7 +446,10 @@ Nothing talks to a real Matter device yet. In the order it will be built:
   (2026-11-07, `examples/commission-device.lisp`, `control-device.lisp`).
   Attestation ran with `:ignore`: the trust store holds the SDK's test
   PAAs only, not the production ones of the Distributed Compliance
-  Ledger.  No other controller has been tried against the lamp.
+  Ledger.  Apple Home commissions and runs the bridge of Chipi's
+  `binding-matter` (2026-11-10 on the bench, in a house since 2026-11-11;
+  see *In use* above).  Google Home, Alexa and SmartThings have not been
+  tried.
 
 ## Build and test
 
@@ -364,4 +485,5 @@ command: `tools/chip-tool pairing code 1 34970112332 --storage-directory /tmp/kv
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done. ~~A bridge: Aggregator, Bridged Node, Bridged Device Basic Information, endpoints added and removed on a live node~~ Done.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done. ~~A bridge: Aggregator, Bridged Node, Bridged Device Basic Information, endpoints added and removed on a live node~~ Done. ~~Boolean State, Temperature Measurement, Window Covering, Thermostat (heating only)~~ Done. ~~A bridge in Apple Home~~ Done (Chipi's `binding-matter`).
+6. Candidates for what comes next: the commissioning window after the last fabric is gone, Level Control (dimmable lights), the production PAAs for the controller side, and item 4.
