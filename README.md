@@ -389,8 +389,8 @@ whoever builds a device or bridge on cl-matter:
 - **OTA.** The hub writes to the OTA Software Update Requestor cluster
   (#x002A), which is not there, and takes the refusal.
 - **The window.** A device opens its commissioning window at a start
-  without fabrics. When the last fabric is removed while it runs, the
-  window stays closed: `open-commissioning-window`, or a restart.
+  without fabrics, and again when its last fabric is removed while it
+  runs (for `:window-timeout`, as at the start).
 - **IPv6 and mDNS** are needed for all of it, so this is AmiLisp today.
 
 ## What's missing

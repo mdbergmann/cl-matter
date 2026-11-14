@@ -471,12 +471,46 @@ second value."
         (is (= #x2E (fabric-fabric-id (first (cr-removed cr)))))
         (is (= 1 (length (device-acl (cr-device cr)))))
         (is (= 1 (length (read-on cr session 0 +cluster-operational-credentials+ 4))))
+        ;; one administrator is left: it opens the window, the device does not
+        (is (not (commissioning-window-open-p (cr-device cr))))
         ;; the application can remove a fabric too
         (remove-device-fabric (cr-device cr) 1)
         (is (null (device-fabrics (cr-device cr))))
+        ;; the last one is gone: the device's own window is open again
+        (is (eq :basic (device-window-mode (cr-device cr))))
+        (is (null (device-window-expiry (cr-device cr))))
+        (is (null (device-window-fabric (cr-device cr))))
         (pass-time cr 0.3)
         (is (not (session-active-p session)))
         (is (= 2 (length (cr-removed cr))))))))
+
+(test last-fabric-removed--the-window-opens-again
+  ;; for WINDOW-TIMEOUT, and the device can be commissioned anew
+  (let ((cr (make-commissioning-rig :device-args (list :window-timeout 600))))
+    (multiple-value-bind (result session) (commission-and-open cr)
+      (declare (ignore result))
+      (let ((device (cr-device cr)))
+        (is (not (commissioning-window-open-p device)))
+        (is (= +noc-status-ok+ (getf (invoke-on cr session 'operational-credentials 'remove-fabric (list :fabric-index 1)) :status-code)))
+        (pass-time cr (+ *fabric-removal-delay* 0.5))
+        (is (null (device-fabrics device)))
+        (is (eq :basic (device-window-mode device)))
+        (is (= +basic-window-open+ (attribute-value (device-administrator-commissioning device) 'window-status)))
+        (pass-time cr 601)
+        (is (not (commissioning-window-open-p device)))))))
+
+(test last-fabric-removed--an-open-window-stays
+  ;; 11.19.7.2: the window the removed administrator opened is not replaced
+  (let ((cr (make-commissioning-rig)))
+    (multiple-value-bind (result session) (commission-and-open cr)
+      (declare (ignore result))
+      (let ((device (cr-device cr)))
+        (is (eq :success (ac-invoke cr session 'open-basic-commissioning-window (list :commissioning-timeout 180))))
+        (let ((expiry (device-window-expiry device)))
+          (remove-device-fabric device 1)
+          (is (null (device-fabrics device)))
+          (is (eq :basic (device-window-mode device)))
+          (is (eql expiry (device-window-expiry device))))))))
 
 (test acl-writes
   (let ((cr (make-commissioning-rig)))

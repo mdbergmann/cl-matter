@@ -288,6 +288,7 @@ into (FABRICs with their indices)."
   window-discriminator                  ; the one the commissionable advertisement carries
   window-fabric                         ; the fabric of the administrator who opened it, or NIL
   basic-verifier basic-salt basic-iterations ; the device's own PASE parameters: what the basic window accepts
+  basic-window-timeout                  ; seconds the device's own window stays open (MAKE-DEVICE's WINDOW-TIMEOUT), or NIL
   on-commissioned
   on-fabric-removed
   on-state-change                       ; called with the device when its persistent state changed
@@ -358,7 +359,8 @@ commissionable advertisement carries.  STATE is a DEVICE-STATE to
 restore, STORAGE a file to keep one in: it is restored from there when it
 exists and rewritten after every change (persistence.lisp).  A device
 that comes up with fabrics does not open its window: its administrators
-do.  ON-COMMISSIONED is called with the device and the new fabric after
+do.  When its last fabric is removed the device is as it came from the
+factory, and its own window opens again, for WINDOW-TIMEOUT.  ON-COMMISSIONED is called with the device and the new fabric after
 CommissioningComplete, ON-FABRIC-REMOVED with the device and a fabric
 that was removed, ON-STATE-CHANGE with the device when what DEVICE-STATE
 returns changed."
@@ -398,7 +400,8 @@ returns changed."
     (when (or passcode verifier)
       (setf (device-basic-verifier device) (%check-window-verifier (or verifier (spake2p-verifier passcode salt iterations)))
             (device-basic-salt device) (%check-pbkdf-parameters salt iterations)
-            (device-basic-iterations device) iterations))
+            (device-basic-iterations device) iterations
+            (device-basic-window-timeout device) window-timeout))
     (%install-handlers device)
     (let ((state (or state (and storage (read-state-file storage)))))
       (when state (restore-device-state device state)))
@@ -551,6 +554,10 @@ Commissioning attributes and the advertisement follow."
   (%trace-device device "fabric ~a removed" fabric)
   (when notify                          ; a fail-safe reverting what it added changes nothing kept
     (%state-changed device)
+    ;; the last administrator is gone: nobody is left to open a window, so the device's own opens
+    ;; again, as on a device that comes up without fabrics
+    (when (and (null (device-fabrics device)) (device-basic-verifier device) (null (device-window-mode device)))
+      (open-commissioning-window device :timeout (device-basic-window-timeout device)))
     (when (device-on-fabric-removed device)
       (funcall (device-on-fabric-removed device) device fabric)))
   fabric)

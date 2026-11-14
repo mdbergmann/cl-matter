@@ -230,7 +230,8 @@ what QUERIER sends arrives at RESPONDER-SOCKET as if multicast, and back."
 
 (test device-advertising-follows-window-and-fabrics
   "The commissionable service while the window is open, found by discriminator;
-the operational service from AddNOC on; nothing after the fabric is gone."
+the operational service from AddNOC on; the commissionable one again when
+the last fabric is gone, nothing once that window is closed."
   (let* ((cr (make-commissioning-rig))
          (device (cr-device cr))
          (port (rig-b-port (cr-rig cr)))
@@ -296,11 +297,16 @@ the operational service from AddNOC on; nothing after the fabric is gone."
                      (is (null (getf node :discriminator)))))
                  (is (null (discover-commissionable-nodes :socket querier :timeout 0.3)))
                  (is (null (discover-operational-node (commissioner-fabric (cr-commissioner cr)) 99 :socket querier :timeout 0.3)))
-                 ;; the fabric goes: nothing is advertised
+                 ;; the last fabric goes: the device's own window opens, the commissionable service
+                 ;; again, under the same instance name
                  (remove-device-fabric device fabric)
+                 (is (commissioning-window-open-p device))
+                 (is (equal '("_matterc._udp") (mapcar #'dns-sd:service-type (device-advertised-services device))))
+                 ;; the window closed, no fabric: nothing is advertised
+                 (close-commissioning-window device)
                  (is (null (device-advertised-services device)))
                  (is (= 3 (length (dns-sd:responder-records (device-advertiser-responder advertiser))))) ; the host's
-                 ;; a new window: the commissionable service again, under the same instance name
+                 ;; a new window: the commissionable service once more
                  (open-commissioning-window device :passcode *passcode* :salt *salt* :iterations 1000)
                  (is (equal '("_matterc._udp") (mapcar #'dns-sd:service-type (device-advertised-services device))))
                  (is (string= (device-advertiser-instance advertiser)
