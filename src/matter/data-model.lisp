@@ -333,14 +333,16 @@ when not given."
   "One cluster on an endpoint.  VALUES holds the stored attributes by id;
 HANDLERS maps command ids to functions of (cluster fields-plist),
 WRITE-HANDLERS attribute ids to functions of (cluster value) run after a
-peer's write."
+peer's write, WRITE-CHECKS attribute ids to functions of (cluster value)
+run before it."
   definition
   endpoint
   (values (make-hash-table))
   (data-version (random (ash 1 32)))
   (feature-map 0)
   (handlers '())
-  (write-handlers '()))
+  (write-handlers '())
+  (write-checks '()))
 
 (defmethod print-object ((c cluster) stream)
   (print-unreadable-object (c stream :type t)
@@ -513,6 +515,8 @@ signals."
            (value (if scoped (%merge-fabric-items old fabric-index new-own) new-own)))
       (when (attribute-definition-check attribute)
         (funcall (attribute-definition-check attribute) cluster value))
+      (let ((check (cdr (assoc (attribute-definition-id attribute) (cluster-write-checks cluster)))))
+        (when check (funcall check cluster value)))
       (%store-attribute cluster attribute value)
       (%attribute-changed cluster (attribute-definition-id attribute))
       (let ((handler (cdr (assoc (attribute-definition-id attribute) (cluster-write-handlers cluster)))))
@@ -532,6 +536,21 @@ application's own side, does not run it.  NIL removes it."
     (setf (cluster-write-handlers cluster) (remove id (cluster-write-handlers cluster) :key #'car))
     (when handler (push (cons id handler) (cluster-write-handlers cluster)))
     handler))
+
+(defun attribute-write-check (cluster designator)
+  "The function this cluster runs before a peer's write of the attribute is stored, or NIL."
+  (cdr (assoc (attribute-definition-id (%attribute cluster designator)) (cluster-write-checks cluster))))
+
+(defun (setf attribute-write-check) (check cluster designator)
+  "Install CHECK, a function of (cluster value), to run before a peer's
+write of the attribute is stored: an INTERACTION-ERROR it signals refuses
+the write with its status, and nothing is stored, reported or handled.  It is this
+cluster's own, on top of what the attribute's definition checks.  (setf
+attribute-value) does not run it.  NIL removes it."
+  (let ((id (attribute-definition-id (%attribute cluster designator))))
+    (setf (cluster-write-checks cluster) (remove id (cluster-write-checks cluster) :key #'car))
+    (when check (push (cons id check) (cluster-write-checks cluster)))
+    check))
 
 (defun command-handler (cluster designator)
   (let ((command (find-command-definition (cluster-definition cluster) designator)))

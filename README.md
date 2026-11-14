@@ -99,7 +99,8 @@ and the place to see it used.
   A served model can cap the report interval it grants
   (`:max-subscription-interval`) and tell the application of subscriptions
   that come and go (`:on-subscription`); `attribute-write-handler` is the
-  hook a peer's write of an attribute runs.
+  hook a peer's write of an attribute runs, `attribute-write-check` the
+  one that can refuse it.
   `test/data-model-test.lisp`, `test/interaction-test.lisp`.
 - **Attestation** (`src/matter/attestation.lisp`): attestation and NOCSR
   elements, the DAC-signed signature, PKCS#10 CSRs, the certification
@@ -268,7 +269,8 @@ layer's test file):
 (cl-matter:make-thermostat-cluster                                       ; heating only
  :local-temperature 2010 :occupied-heating-setpoint 2100
  :on-setpoint-change (lambda (cluster hundredths) ...)
- :on-system-mode-change (lambda (cluster mode) ...))                     ; 0 Off, 4 Heat
+ :system-modes '(0 4)                                                    ; what a peer may write: 0 Off, 4 Heat
+ :on-system-mode-change (lambda (cluster mode) ...))
 ;; a bridge that hubs should notice restarting, and that says who comes and goes
 (cl-matter:make-interaction-model *m* :node *node*
   :max-subscription-interval 60          ; a report at least this often, whatever the subscriber asks for

@@ -553,6 +553,25 @@ stay silent."
     (write-attribute c #x1C (tlv nil :unsigned 0))
     (is (= 0 (attribute-value c 'system-mode)))
     (is (equal '(0) modes))
+    ;; a heating knows Off and Heat: Cool is refused, nothing stored, nobody told
+    (is (eq :constraint-error (status-of (lambda () (write-attribute c #x1C (tlv nil :unsigned 3))))))
+    (is (= 0 (attribute-value c 'system-mode)))
+    (is (equal '(0) modes))
+    ;; one that cannot be switched off takes Heat only
+    (let* ((modes '())
+           (c (make-thermostat-cluster :system-modes '(4)
+                                       :on-system-mode-change (lambda (cluster value) (declare (ignore cluster)) (push value modes)))))
+      (is (eq :constraint-error (status-of (lambda () (write-attribute c #x1C (tlv nil :unsigned 0))))))
+      (is (= 4 (attribute-value c 'system-mode)))
+      (is (null modes))
+      (write-attribute c #x1C (tlv nil :unsigned 4))
+      (is (equal '(4) modes))
+      ;; the application's own side is not checked
+      (is (functionp (attribute-write-check c 'system-mode)))
+      (setf (attribute-write-check c 'system-mode) nil)
+      (write-attribute c #x1C (tlv nil :unsigned 0))
+      (is (= 0 (attribute-value c 'system-mode))))
+    (signals error (make-thermostat-cluster :system-mode 0 :system-modes '(4)))
     ;; the limits are the application's to give
     (let ((c (make-thermostat-cluster :min-heat-setpoint-limit 1000 :max-heat-setpoint-limit 2500)))
       (is (= 1000 (attribute-value c 'abs-min-heat-setpoint-limit)))

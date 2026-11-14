@@ -424,11 +424,14 @@ CurrentPositionLiftPercent100ths and CurrentPositionTiltPercent100ths."
 
 (defun make-thermostat-cluster (&key (local-temperature :null) (occupied-heating-setpoint 2000)
                                   (min-heat-setpoint-limit 700) (max-heat-setpoint-limit 3000)
-                                  (system-mode 4)
+                                  (system-mode 4) (system-modes '(0 4))
                                   on-setpoint-change on-system-mode-change)
   "A heating-only Thermostat cluster: LOCAL-TEMPERATURE and
 OCCUPIED-HEATING-SETPOINT in hundredths of a degree (`temperature-hundredths'),
 the setpoint kept within the limits, SYSTEM-MODE 0 (Off) or 4 (Heat).
+SYSTEM-MODES are the modes a peer may write, Off and Heat by default; any
+other is refused with CONSTRAINT_ERROR -- '(4) for a heating that cannot
+be switched off.
 ON-SETPOINT-CHANGE is called with the cluster and the new setpoint when a
 peer writes it or sends SetpointRaiseLower, ON-SYSTEM-MODE-CHANGE with
 the cluster and the new mode when a peer writes it.  The application
@@ -445,6 +448,13 @@ reports the temperature it measures and the setpoint set elsewhere with
                                :system-mode system-mode)))
     (when on-setpoint-change
       (setf (attribute-write-handler cluster 'occupied-heating-setpoint) on-setpoint-change))
+    (unless (member system-mode system-modes)
+      (error "the system mode ~d is not one of ~{~d~^, ~}" system-mode system-modes))
+    (setf (attribute-write-check cluster 'system-mode)
+          (lambda (cluster mode)
+            (declare (ignore cluster))
+            (unless (member mode system-modes)
+              (%constraint "the system mode must be one of ~{~d~^, ~}, got ~d" system-modes mode))))
     (when on-system-mode-change
       (setf (attribute-write-handler cluster 'system-mode) on-system-mode-change))
     (setf (command-handler cluster 'setpoint-raise-lower)

@@ -765,7 +765,7 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:cluster-handlers #:cluster-id #:cluster-name #:cluster-revision
    #:attribute-present-p #:cluster-attribute-ids #:cluster-accepted-command-ids #:cluster-generated-command-ids
    #:attribute-value #:read-attribute #:write-attribute #:command-handler #:invoke-cluster-command
-   #:attribute-write-handler
+   #:attribute-write-handler #:attribute-write-check
    #:endpoint #:endpoint-p #:make-endpoint #:endpoint-id #:endpoint-device-types #:endpoint-clusters #:endpoint-node
    #:endpoint-parent
    #:add-cluster #:find-cluster
