@@ -1,9 +1,9 @@
 ;;;; clusters.lisp -- the first clusters: Descriptor, Basic Information and
 ;;;; Bridged Device Basic Information (Matter Core Specification chapter 9
 ;;;; and 11), Identify and On/Off (Matter Application Cluster Specification
-;;;; chapters 1.2 and 1.5), Boolean State and Temperature Measurement
-;;;; (chapters 1.7 and 2.3), Window Covering and Thermostat (chapters 5.3
-;;;; and 4.3); and the endpoints of a bridge (Matter Device
+;;;; chapters 1.2 and 1.5), Level Control (chapter 1.6), Boolean State and
+;;;; Temperature Measurement (chapters 1.7 and 2.3), Window Covering and
+;;;; Thermostat (chapters 5.3 and 4.3); and the endpoints of a bridge (Matter Device
 ;;;; Library Specification chapter 9: Aggregator and Bridged Node).  Each
 ;;;; is a DEFINE-CLUSTER plus, where the behaviour is generic, a
 ;;;; constructor that installs the command handlers.
@@ -17,6 +17,7 @@
 (defconstant +cluster-bridged-device-basic-information+ #x0039)
 (defconstant +cluster-identify+ #x0003)
 (defconstant +cluster-on-off+ #x0006)
+(defconstant +cluster-level-control+ #x0008)
 (defconstant +cluster-boolean-state+ #x0045)
 (defconstant +cluster-temperature-measurement+ #x0402)
 (defconstant +cluster-window-covering+ #x0102)
@@ -26,6 +27,7 @@
 (defconstant +device-type-aggregator+ #x000E)
 (defconstant +device-type-bridged-node+ #x0013)
 (defconstant +device-type-on-off-light+ #x0100)
+(defconstant +device-type-dimmable-light+ #x0101)
 (defconstant +device-type-on-off-plug-in-unit+ #x010A)
 (defconstant +device-type-on-off-light-switch+ #x0103)
 (defconstant +device-type-contact-sensor+ #x0015)
@@ -213,6 +215,134 @@ called with the cluster and the new state after each change."
             (command-handler cluster 'toggle) (lambda (cluster fields)
                                                 (declare (ignore fields))
                                                 (set-state cluster (not (attribute-value cluster 'on-off))))))
+    cluster))
+
+;;; ------------------------------------------------------------------
+;;; Level Control (0x0008): the brightness of a dimmable light.  The
+;;; level is 1..254 for a light (the Lighting feature); with the On/Off
+;;; feature the ...WithOnOff commands switch the On/Off cluster of the
+;;; same endpoint along.  Nothing here takes time: a command sets
+;;; CurrentLevel to where the move ends, the application does the
+;;; dimming and reports where it is with (setf attribute-value).
+
+(define-cluster level-control (+cluster-level-control+ :revision 5)
+  (:attributes
+   (current-level 0 (:nullable :uint8) :default :null)
+   (remaining-time 1 :uint16 :optional t)
+   (min-level 2 :uint8 :optional t)
+   (max-level 3 :uint8 :optional t)
+   (options #x0F :bitmap8 :default 0 :writable t)
+   (on-off-transition-time #x10 :uint16 :optional t :writable t)
+   (on-level #x11 (:nullable :uint8) :default :null :writable t)
+   (start-up-current-level #x4000 (:nullable :uint8) :optional t :writable t :write :manage))
+  (:commands
+   (move-to-level 0 :fields ((0 :level :uint8) (1 :transition-time (:nullable :uint16))
+                             (2 :options-mask :bitmap8 :optional) (3 :options-override :bitmap8 :optional)))
+   (move 1 :fields ((0 :move-mode :enum8) (1 :rate (:nullable :uint8))
+                    (2 :options-mask :bitmap8 :optional) (3 :options-override :bitmap8 :optional)))
+   (step 2 :fields ((0 :step-mode :enum8) (1 :step-size :uint8) (2 :transition-time (:nullable :uint16))
+                    (3 :options-mask :bitmap8 :optional) (4 :options-override :bitmap8 :optional)))
+   (stop 3 :fields ((0 :options-mask :bitmap8 :optional) (1 :options-override :bitmap8 :optional)))
+   (move-to-level-with-on-off 4 :fields ((0 :level :uint8) (1 :transition-time (:nullable :uint16))
+                                         (2 :options-mask :bitmap8 :optional)
+                                         (3 :options-override :bitmap8 :optional)))
+   (move-with-on-off 5 :fields ((0 :move-mode :enum8) (1 :rate (:nullable :uint8))
+                                (2 :options-mask :bitmap8 :optional) (3 :options-override :bitmap8 :optional)))
+   (step-with-on-off 6 :fields ((0 :step-mode :enum8) (1 :step-size :uint8)
+                                (2 :transition-time (:nullable :uint16))
+                                (3 :options-mask :bitmap8 :optional) (4 :options-override :bitmap8 :optional)))
+   (stop-with-on-off 7 :fields ((0 :options-mask :bitmap8 :optional) (1 :options-override :bitmap8 :optional)))))
+
+(defconstant +level-control-feature-on-off+ 1)
+(defconstant +level-control-feature-lighting+ 2)
+
+(defun make-level-control-cluster (&key (current-level :null) (min-level 1) (max-level 254)
+                                     on-off on-level)
+  "A Level Control cluster for a dimmable light: CURRENT-LEVEL within
+MIN-LEVEL..MAX-LEVEL (1..254, what a light has), or :NULL while unknown.
+ON-OFF is the On/Off cluster of the same endpoint (`make-on-off-cluster').
+
+MoveToLevel and Step set CurrentLevel to the level asked for, kept within
+the limits, at once: the transition time is the application's business.
+Move goes to the end of its direction, Stop has nothing to stop.  The
+...WithOnOff commands run the On command of ON-OFF before a move to above
+MIN-LEVEL and its Off command after a move that ends at MIN-LEVEL, so the
+On/Off cluster's ON-CHANGE hears of it; the commands without it are
+dropped while ON-OFF is off, unless Options or the command's override
+says ExecuteIfOff.
+
+ON-LEVEL is called with the cluster and the new level after each command
+that was carried out, also when the level is the one it had.  What the
+light does by itself the application reports with (setf attribute-value)
+on CurrentLevel, which calls nothing."
+  (unless (<= 0 min-level max-level 254)
+    (error "the levels must be 0 <= min <= max <= 254, got ~d and ~d" min-level max-level))
+  (unless (or (eq current-level :null) (<= min-level current-level max-level))
+    (error "the current level ~d is not within ~d..~d" current-level min-level max-level))
+  (let ((cluster (make-cluster 'level-control
+                               :feature-map (logior +level-control-feature-lighting+
+                                                    (if on-off +level-control-feature-on-off+ 0))
+                               :current-level current-level
+                               :remaining-time 0
+                               :min-level min-level
+                               :max-level max-level
+                               :start-up-current-level :null)))
+    (labels ((execute-p (cluster fields with-on-off)
+               ;; ExecuteIfOff is bit 0 of Options, as the command overrides it
+               (or with-on-off
+                   (null on-off)
+                   (attribute-value on-off 'on-off)
+                   (let ((mask (or (getf fields :options-mask) 0)))
+                     (logbitp 0 (logior (logandc2 (attribute-value cluster 'options) mask)
+                                        (logand (or (getf fields :options-override) 0) mask))))))
+             (switch (command)
+               (when on-off
+                 (let ((handler (command-handler on-off command)))
+                   (when handler (funcall handler on-off nil)))))
+             (go-to (cluster level fields with-on-off)
+               (when (execute-p cluster fields with-on-off)
+                 (let ((level (max min-level (min max-level level))))
+                   (when (and with-on-off (> level min-level))
+                     (switch 'on))
+                   (unless (eql level (attribute-value cluster 'current-level))
+                     (setf (attribute-value cluster 'current-level) level))
+                   (when on-level (funcall on-level cluster level))
+                   (when (and with-on-off (= level min-level))
+                     (switch 'off))))
+               nil)
+             (current (cluster)
+               (let ((level (attribute-value cluster 'current-level)))
+                 (if (integerp level) level min-level)))
+             (move-to-level (with-on-off)
+               (lambda (cluster fields)
+                 (let ((level (getf fields :level)))
+                   (if (<= 0 level 254)
+                       (go-to cluster level fields with-on-off)
+                       :constraint-error))))
+             (move (with-on-off)
+               (lambda (cluster fields)
+                 (case (getf fields :move-mode)
+                   (0 (go-to cluster max-level fields with-on-off))
+                   (1 (go-to cluster min-level fields with-on-off))
+                   (t :constraint-error))))
+             (step-level (with-on-off)
+               (lambda (cluster fields)
+                 (let ((size (getf fields :step-size)))
+                   (case (getf fields :step-mode)
+                     (0 (go-to cluster (+ (current cluster) size) fields with-on-off))
+                     (1 (go-to cluster (- (current cluster) size) fields with-on-off))
+                     (t :constraint-error)))))
+             (stop (cluster fields)
+               (declare (ignore cluster fields))
+               nil))
+      (setf (command-handler cluster 'move-to-level) (move-to-level nil)
+            (command-handler cluster 'move) (move nil)
+            (command-handler cluster 'step) (step-level nil)
+            (command-handler cluster 'stop) #'stop
+            (command-handler cluster 'move-to-level-with-on-off) (move-to-level t)
+            (command-handler cluster 'move-with-on-off) (move t)
+            (command-handler cluster 'step-with-on-off) (step-level t)
+            (command-handler cluster 'stop-with-on-off) #'stop))
     cluster))
 
 ;;; ------------------------------------------------------------------

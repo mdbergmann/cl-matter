@@ -776,16 +776,17 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    ;; clusters (clusters.lisp)
    #:+cluster-basic-information+ #:+cluster-bridged-device-basic-information+
    #:+cluster-identify+ #:+cluster-on-off+ #:+cluster-boolean-state+ #:+cluster-temperature-measurement+
-   #:+cluster-window-covering+ #:+cluster-thermostat+
+   #:+cluster-window-covering+ #:+cluster-thermostat+ #:+cluster-level-control+
    #:+device-type-root-node+ #:+device-type-aggregator+ #:+device-type-bridged-node+
    #:+device-type-on-off-light+ #:+device-type-on-off-plug-in-unit+ #:+device-type-on-off-light-switch+
    #:+device-type-contact-sensor+ #:+device-type-temperature-sensor+
-   #:+device-type-window-covering+ #:+device-type-thermostat+
+   #:+device-type-window-covering+ #:+device-type-thermostat+ #:+device-type-dimmable-light+
    #:+data-model-revision+ #:+specification-version+
    #:make-identify-cluster #:make-on-off-cluster #:make-basic-node
    #:make-boolean-state-cluster #:make-temperature-measurement-cluster #:temperature-hundredths
    #:make-window-covering-cluster #:percent-hundredths #:window-covering-features
    #:make-thermostat-cluster
+   #:make-level-control-cluster
    #:make-aggregator-endpoint #:make-bridged-endpoint #:bridged-device-basic-information
    ;; access control (access.lisp)
    #:+cluster-access-control+ #:+auth-mode-pase+ #:+auth-mode-case+ #:+auth-mode-group+ #:+cat-subject-prefix+

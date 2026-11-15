@@ -507,6 +507,104 @@ the application told what to do; tilt only when asked for."
   (is (= 0 (percent-hundredths -1)))
   (is (eq :null (percent-hundredths nil))))
 
+(test level-control-cluster
+  "Level Control: the commands set CurrentLevel within the limits and tell
+the application; the ...WithOnOff ones switch the On/Off cluster along,
+the others are dropped while it is off."
+  (let* ((levels '())
+         (switches '())
+         (on-off (make-on-off-cluster
+                  :on-change (lambda (cluster on) (declare (ignore cluster)) (push on switches))))
+         (c (make-level-control-cluster
+             :current-level 100 :on-off on-off
+             :on-level (lambda (cluster level) (declare (ignore cluster)) (push level levels)))))
+    (flet ((invoke (command &rest fields)
+             (nth-value 1 (invoke-cluster-command c command (tlv nil :structure fields))))
+           (level () (attribute-value c 'current-level)))
+      (is (= +cluster-level-control+ (cluster-id c)))
+      (is (= 5 (cluster-revision c)))
+      (is (= 3 (cluster-feature-map c)))                     ; OO | LT
+      (is (= 100 (level)))
+      (is (= 1 (attribute-value c 'min-level)))
+      (is (= 254 (attribute-value c 'max-level)))
+      (is (= 0 (attribute-value c 'remaining-time)))
+      (is (eq :null (attribute-value c 'on-level)))
+      (is (equal '(0 1 2 3 4 5 6 7) (cluster-accepted-command-ids c)))
+      ;; off: MoveToLevel is dropped ...
+      (is (im-status-success-p (invoke 0 (tlv 0 :unsigned 200) (tlv 1 :null))))
+      (is (= 100 (level)))
+      (is (null levels))
+      ;; ... unless the command says ExecuteIfOff, or Options does
+      (invoke 0 (tlv 0 :unsigned 200) (tlv 1 :null) (tlv 2 :unsigned 1) (tlv 3 :unsigned 1))
+      (is (= 200 (level)))
+      (setf (attribute-value c 'options) 1)
+      (invoke 0 (tlv 0 :unsigned 150) (tlv 1 :unsigned 10))
+      (is (= 150 (level)))
+      (invoke 0 (tlv 0 :unsigned 160) (tlv 1 :null) (tlv 2 :unsigned 1) (tlv 3 :unsigned 0))
+      (is (= 150 (level)))
+      (setf (attribute-value c 'options) 0)
+      (is (equal '(200 150) (reverse levels)))
+      (is (null switches))
+      ;; MoveToLevelWithOnOff switches on, then tells the level
+      (setf levels '())
+      (invoke 4 (tlv 0 :unsigned 127) (tlv 1 :unsigned 0) (tlv 2 :unsigned 0) (tlv 3 :unsigned 0))
+      (is (= 127 (level)))
+      (is (eq t (attribute-value on-off 'on-off)))
+      (is (equal '(t) switches))
+      (is (equal '(127) levels))
+      ;; on: MoveToLevel is carried out, and told again for the same level
+      (invoke 0 (tlv 0 :unsigned 127) (tlv 1 :null))
+      (is (equal '(127 127) levels))
+      ;; the level is kept within the limits; 255 is no level
+      (invoke 0 (tlv 0 :unsigned 0) (tlv 1 :null))
+      (is (= 1 (level)))
+      (is (eq t (attribute-value on-off 'on-off)))           ; without on/off the light stays on
+      (is (= +im-status-constraint-error+
+             (im-status-status (invoke 0 (tlv 0 :unsigned 255) (tlv 1 :null)))))
+      (is (= 1 (level)))
+      ;; Step up and down, Move to the ends, Stop
+      (invoke 2 (tlv 0 :unsigned 0) (tlv 1 :unsigned 50) (tlv 2 :null))
+      (is (= 51 (level)))
+      (invoke 2 (tlv 0 :unsigned 1) (tlv 1 :unsigned 20) (tlv 2 :null))
+      (is (= 31 (level)))
+      (invoke 1 (tlv 0 :unsigned 0) (tlv 1 :null))
+      (is (= 254 (level)))
+      (is (im-status-success-p (invoke 3)))
+      (is (= 254 (level)))
+      (is (= +im-status-constraint-error+
+             (im-status-status (invoke 1 (tlv 0 :unsigned 2) (tlv 1 :null)))))
+      ;; a ...WithOnOff move that ends at the minimum switches off, after the level
+      (setf levels '() switches '())
+      (invoke 6 (tlv 0 :unsigned 1) (tlv 1 :unsigned 255) (tlv 2 :null))
+      (is (= 1 (level)))
+      (is (eq nil (attribute-value on-off 'on-off)))
+      (is (equal '(nil) switches))
+      (is (equal '(1) levels))
+      (invoke 5 (tlv 0 :unsigned 0) (tlv 1 :null))
+      (is (= 254 (level)))
+      (is (eq t (attribute-value on-off 'on-off)))
+      (is (im-status-success-p (invoke 7)))
+      ;; a missing level: INVALID_COMMAND
+      (is (eq :invalid-command (status-of (lambda () (invoke 0 (tlv 1 :null))))))
+      ;; what the light does by itself is reported, and tells nobody
+      (setf levels '())
+      (setf (attribute-value c 'current-level) 77)
+      (is (= 77 (level)))
+      (is (null levels))
+      ;; a peer may write Options and OnLevel, not the level
+      (is (= 1 (write-attribute c #x0F (tlv nil :unsigned 1))))
+      (is (eq :unsupported-write (status-of (lambda () (write-attribute c 0 (tlv nil :unsigned 9))))))))
+  ;; without an On/Off cluster: no OO feature, and every command is carried out
+  (let ((c (make-level-control-cluster :min-level 10 :max-level 200)))
+    (is (= 2 (cluster-feature-map c)))
+    (is (eq :null (attribute-value c 'current-level)))
+    (invoke-cluster-command c 2 (tlv nil :structure (list (tlv 0 :unsigned 0) (tlv 1 :unsigned 5) (tlv 2 :null))))
+    (is (= 15 (attribute-value c 'current-level)))           ; a step from the unknown starts at the minimum
+    (invoke-cluster-command c 4 (tlv nil :structure (list (tlv 0 :unsigned 254) (tlv 1 :null))))
+    (is (= 200 (attribute-value c 'current-level))))
+  (signals error (make-level-control-cluster :min-level 10 :max-level 5))
+  (signals error (make-level-control-cluster :current-level 255)))
+
 (test thermostat-cluster
   "Thermostat, heating only: the setpoint written or stepped by a peer
 reaches the application, the limits hold, the application's own reports

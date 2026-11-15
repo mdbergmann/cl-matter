@@ -89,8 +89,8 @@ and the place to see it used.
   of a new endpoint, so a hub shows a device added to a live bridge);
   Descriptor, Basic
   Information, Bridged Device Basic Information, Identify, On/Off,
-  Boolean State, Temperature Measurement, Window Covering and Thermostat
-  (heating only); the
+  Level Control, Boolean State, Temperature Measurement, Window Covering
+  and Thermostat (heating only); the
   Aggregator and Bridged Node endpoints of a bridge
   (`make-aggregator-endpoint`, `make-bridged-endpoint`); Read, Write,
   Invoke and Subscribe served from a node and
@@ -262,6 +262,9 @@ layer's test file):
 ;; and reports what is with (setf attribute-value), which runs none of them
 (cl-matter:make-boolean-state-cluster :state-value t)                    ; a contact, true while closed
 (cl-matter:make-temperature-measurement-cluster :measured-value 2150)    ; hundredths of a degree
+(cl-matter:make-level-control-cluster                                    ; a dimmable light, levels 1..254
+ :current-level 127 :on-off *on-off*                                     ; the endpoint's On/Off: ...WithOnOff switches it
+ :on-level (lambda (cluster level) ...))
 (cl-matter:make-window-covering-cluster
  :features '(:lift :position-aware-lift :tilt :position-aware-tilt)      ; 10000 is closed
  :on-move (lambda (cluster direction) ...)                               ; :open, :close, :stop
@@ -413,10 +416,10 @@ In the order it will be built:
   reported; no list chunking (an attribute too big for one message is
   reported RESOURCE_EXHAUSTED) and no group writes or invokes. Beyond
   the commissioning clusters only Descriptor, Basic Information, Bridged
-  Device Basic Information, Identify, On/Off, Boolean State,
-  Temperature Measurement, Window Covering and Thermostat (heating only)
-  are defined -- no Level Control, so no dimmable light, and no OTA
-  requestor; the
+  Device Basic Information, Identify, On/Off, Level Control, Boolean
+  State, Temperature Measurement, Window Covering and Thermostat (heating
+  only) are defined -- Level Control jumps to where a move ends, without
+  transitions, and there is no colour and no OTA requestor; the
   Aggregator and Bridged Node device types exist, the bridge's optional
   Actions cluster does not.
 - **Access control**: the Group auth mode never matches (there are no
@@ -487,5 +490,5 @@ command: `tools/chip-tool pairing code 1 34970112332 --storage-directory /tmp/kv
 2. ~~Querier: `browse` and `resolve` over the mDNS group.~~ Done.
 3. ~~Responder: announce, answer, goodbye.~~ Done.
 4. SBCL backend: multicast membership and `getifaddrs` through `sb-alien`.
-5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done. ~~A bridge: Aggregator, Bridged Node, Bridged Device Basic Information, endpoints added and removed on a live node~~ Done. ~~Boolean State, Temperature Measurement, Window Covering, Thermostat (heating only)~~ Done. ~~A bridge in Apple Home~~ Done (Chipi's `binding-matter`).
-6. Candidates for what comes next: the commissioning window after the last fabric is gone, Level Control (dimmable lights), the production PAAs for the controller side, and item 4.
+5. ~~Matter TLV~~ Done. ~~Message framing~~ Done. ~~AES-CCM, nonce, secured messages, SHA-256/HMAC/HKDF/PBKDF2~~ Done. ~~PASE (SPAKE2+ on Ironclad's P-256)~~ Done. ~~CASE: certificates, fabrics, the Sigma handshake~~ Done. ~~Exchanges, MRP and the session manager over the net backend~~ Done. ~~The interaction model: Read/Write/Invoke/Subscribe and the first clusters~~ Done. ~~Commissioning: DER import, CSR, device attestation, the commissioning clusters, the device and the commissioner~~ Done. ~~Discovery: the commissionable and operational advertisements, the onboarding payload (QR and manual pairing code), the commissioner's search~~ Done. ~~An interop test against chip-tool~~ Done. ~~ACL enforcement~~ Done. ~~Administrator Commissioning~~ Done. ~~Fabric persistence~~ Done. ~~A bridge: Aggregator, Bridged Node, Bridged Device Basic Information, endpoints added and removed on a live node~~ Done. ~~Boolean State, Temperature Measurement, Window Covering, Thermostat (heating only)~~ Done. ~~Level Control (dimmable lights)~~ Done. ~~A bridge in Apple Home~~ Done (Chipi's `binding-matter`).
+6. Candidates for what comes next: the production PAAs for the controller side, and item 4.
