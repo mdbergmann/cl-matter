@@ -875,4 +875,5 @@ roles are host-side; AmigaOS stacks are IPv4 and get the discovery layer.")
    #:device-services #:start-device-advertising #:stop-device-advertising #:device-advertised-services
    #:device-onboarding-payload
    #:discover-commissionable-nodes #:discover-operational-node
-   #:start-commissioning-window-request #:request-commissioning-window))
+   #:start-commissioning-window-request #:request-commissioning-window
+   #:start-fabric-label-update #:update-fabric-label))

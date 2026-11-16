@@ -229,6 +229,8 @@ layer's test file):
 ;; Commissioning, timed, Administer); the payload's codes go to the other commissioner
 (defvar *next* (cl-matter:request-commissioning-window *admin* (getf result :session) :timeout 300))
 (cl-matter:encode-manual-pairing-code *next*)          ; => "02757-612-6473" style, 11 digits
+;; and names its fabric on the node, for the other administrators' lists (UpdateFabricLabel)
+(cl-matter:update-fabric-label *admin* (getf result :session) "Chipi")   ; START-FABRIC-LABEL-UPDATE does not wait
 ;; the device's side: (open-commissioning-window *device* :timeout 300) re-opens the basic
 ;; window; :mode :enhanced with :verifier/:salt/:iterations/:discriminator is what the cluster does
 ;; across a restart: the fabric table with its keys, the ACL, the resumption records and the

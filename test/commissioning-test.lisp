@@ -1007,6 +1007,57 @@ node nulls the window attributes of a window it opened."
               (is (eq :success (ac-invoke cr session 'revoke-commissioning)))
               (is (not (commissioning-window-open-p device))))))))))
 
+(test the-commissioner-names-its-fabric
+  "UpdateFabricLabel from the commissioner's side: the node lists the fabric
+under the label; a label another fabric on the node has is refused, and the
+completion says so."
+  (let ((cr (make-commissioning-rig)))
+    (multiple-value-bind (result session) (commission-and-open cr)
+      (declare (ignore result))
+      (signals error (start-fabric-label-update (cr-commissioner cr) session (make-string 33 :initial-element #\x)))
+      (let* ((seen '())
+             (interaction (start-fabric-label-update (cr-commissioner cr) session "Chipi"
+                                                     :on-complete (lambda (i e) (push (list i e) seen)))))
+        (finish cr interaction)
+        (is (equal (list (list interaction nil)) seen))
+        (is (string= "Chipi" (fabric-label (device-fabric cr))))
+        (is (string= "Chipi" (getf (first (read-on cr session 0 +cluster-operational-credentials+ 1)) :label))))
+      ;; a second fabric cannot take the label
+      (open-commissioning-window (cr-device cr) :passcode *passcode* :salt *salt* :iterations 1000)
+      (let* ((second (make-commissioner (commissioner-channel (cr-commissioner cr)) (cr-ma cr) :fabric-id #x2E))
+             (cr2 (let ((copy (copy-cr cr))) (setf (cr-commissioner copy) second) copy))
+             (session2 (getf (commission-on-rig cr2) :session))
+             (seen '())
+             (interaction (start-fabric-label-update second session2 "Chipi"
+                                                     :on-complete (lambda (i e) (declare (ignore i)) (push e seen)))))
+        (finish cr interaction)
+        (is (= 1 (length seen)))
+        (is (typep (first seen) 'interaction-error))
+        (is (eql +noc-status-label-conflict+ (interaction-error-cluster-status (first seen))))
+        (is (string= "" (fabric-label (find 2 (device-fabrics (cr-device cr)) :key #'fabric-index))))))))
+
+(test update-fabric-label-over-udp
+  "The waiting form, the device polling in its own thread."
+  (with-udp-rig (a b host port)
+    (let* ((cb (make-secure-channel b))
+           (mb (make-interaction-model b :node (light-node)))
+           (device (make-device :node (interaction-model-node mb) :channel cb :model mb
+                                :credentials (test-attestation-credentials)
+                                :passcode *passcode* :salt *salt* :iterations 1000))
+           (ca (make-secure-channel a))
+           (ma (make-interaction-model a))
+           (commissioner (make-commissioner ca ma :fabric-id #x5A))
+           (stop nil)
+           (thread (bt:make-thread (lambda () (exchange-manager-run b :until (lambda () stop) :timeout 120))
+                                   :name "matter device")))
+      (unwind-protect
+           (let ((session (getf (commission commissioner host port :passcode *passcode* :timeout 60) :session)))
+             (is (string= "Chipi" (update-fabric-label commissioner session "Chipi")))
+             (is (string= "Chipi" (fabric-label (first (device-fabrics device)))))
+             (close-session ca session))
+        (setf stop t)
+        (bt:join-thread thread)))))
+
 ;;; ------------------------------------------------------------------
 ;;; Over UDP, the device polling in its own thread
 

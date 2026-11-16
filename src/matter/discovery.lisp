@@ -618,3 +618,52 @@ next administrator, or the INTERACTION-ERROR the node answered with."
       (apply #'start-commissioning-window-request commissioner session :allow-other-keys t args)
     (%check-command-response (first (interaction-wait interaction :timeout wait)) "OpenCommissioningWindow")
     payload))
+
+;;; ------------------------------------------------------------------
+;;; An administrator names its fabric on a node (11.18.6.11)
+
+(defun %noc-response-error (interaction what)
+  "NIL when INTERACTION, an invoke a node answers with a NOCResponse, got
+one with status OK; else the INTERACTION-ERROR that says why not, the NOC
+status as its cluster status."
+  (if (interaction-failed-p interaction)
+      (interaction-condition interaction)
+      (handler-case
+          (let* ((value (%check-command-response (first (interaction-result interaction)) what))
+                 (code (and (listp value) (getf value :status-code))))
+            (unless (eql code +noc-status-ok+)
+              (make-condition 'interaction-error :status +im-status-failure+ :cluster-status code
+                                                 :message (format nil "~a was answered with NOC status ~a~@[: ~a~]"
+                                                                  what code (and (listp value) (getf value :debug-text))))))
+        (interaction-error (e) e))))
+
+(defun start-fabric-label-update (commissioner session label &key on-complete)
+  "Tell the node on SESSION, a CASE session the commissioner holds as its
+administrator, to list the commissioner's fabric under LABEL, a string of
+at most 32 characters: what the node's other administrators show for it
+instead of a bare fabric id.  Returns the INTERACTION of the
+UpdateFabricLabel invoke.  ON-COMPLETE is called with it and NIL, or with
+the INTERACTION-ERROR that says why the node did not take the label --
+its cluster status is +NOC-STATUS-LABEL-CONFLICT+ when another fabric on
+the node has it."
+  (unless (and (stringp label) (<= (length label) 32))
+    (error "a fabric label is a string of at most 32 characters, not ~s" label))
+  (let ((definition (find-cluster-definition 'operational-credentials)))
+    (start-invoke (commissioner-model commissioner) session
+                  (command-path +endpoint-root+ (cluster-definition-id definition)
+                                (command-definition-id (find-command-definition definition 'update-fabric-label)))
+                  (command-fields 'operational-credentials 'update-fabric-label (list :label label))
+                  :on-complete (and on-complete
+                                    (lambda (interaction)
+                                      (funcall on-complete interaction
+                                               (%noc-response-error interaction "UpdateFabricLabel")))))))
+
+(defun update-fabric-label (commissioner session label &key (wait *interaction-timeout*))
+  "START-FABRIC-LABEL-UPDATE and wait: LABEL, or the INTERACTION-ERROR the
+node answered with."
+  (let ((interaction (start-fabric-label-update commissioner session label)))
+    (handler-case (interaction-wait interaction :timeout wait)
+      (interaction-error () nil))
+    (let ((error (%noc-response-error interaction "UpdateFabricLabel")))
+      (when error (error error)))
+    label))
