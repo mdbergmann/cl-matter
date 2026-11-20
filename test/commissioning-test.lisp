@@ -185,6 +185,17 @@ second value."
         (is (null (exchange-manager-exchanges (rig-b (cr-rig cr)))))
         (is (null (secure-channel-handshakes (device-channel device))))))))
 
+(test commissioning-steps-are-told
+  (let ((cr (make-commissioning-rig))
+        (steps '()))
+    (commission-on-rig cr :on-step (lambda (c)
+                                     (push (commissioning-step c) steps)
+                                     ;; a watcher's error is not the flow's
+                                     (error "watcher")))
+    (is (equal '(:pase :arm-fail-safe :read-basic-information :regulatory-config :dac :pai :attestation
+                 :csr :add-root :add-noc :case :complete :done)
+               (reverse steps)))))
+
 (test commission-with-icac-country-and-node-id
   (let ((cr (make-commissioning-rig :icac t)))
     (let ((result (commission-on-rig cr :node-id #xABCD :country-code "DE" :regulatory-location +regulatory-indoor+

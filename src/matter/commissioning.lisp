@@ -1040,7 +1040,7 @@ plist: :node-id :fabric :session (the CASE session) :pase-session :dac
 :pai :attestation :fabric-index) or :FAILED (CONDITION says why)."
   commissioner host port passcode salt iterations node-id country-code regulatory-location
   (fail-safe-seconds 60) (attestation :verify) case-auth-tags
-  (state :running) (step :pase) result condition on-complete
+  (state :running) (step :pase) result condition on-complete on-step
   pase-session case-session attestation-nonce csr-nonce dac pai attestation-result
   csr-public-key noc fabric-index vendor-id product-id)
 
@@ -1116,6 +1116,8 @@ the response plist (or the flow fails on a status)."
   "Run STEP of the flow; each step ends by asking for the next one."
   (setf (commissioning-step c) step)
   (%trace (%commissioning-manager c) "commissioning ~a:~d: ~a" (commissioning-host c) (commissioning-port c) step)
+  ;; who watches hears of the step before it runs; its errors are its own
+  (when (commissioning-on-step c) (ignore-errors (funcall (commissioning-on-step c) c)))
   (let* ((commissioner (commissioning-commissioner c))
          (channel (commissioner-channel commissioner))
          (fabric (commissioner-fabric commissioner))
@@ -1263,7 +1265,7 @@ the response plist (or the flow fails on a status)."
 
 (defun start-commissioning (commissioner host port &key passcode salt iterations node-id country-code
                                                        regulatory-location (fail-safe-seconds 60)
-                                                       (attestation :verify) case-auth-tags on-complete)
+                                                       (attestation :verify) case-auth-tags on-complete on-step)
   "Commission the device at HOST:PORT with PASSCODE (SALT and ITERATIONS
 when known) into the commissioner's fabric as NODE-ID (default: the next
 free one), the flow of section 5.5.  COUNTRY-CODE sets the regulatory
@@ -1271,12 +1273,16 @@ configuration (REGULATORY-LOCATION, default indoor/outdoor).  ATTESTATION
 :VERIFY checks the device's DAC chain and certification declaration
 against the trust store; :IGNORE accepts any device whose signature is
 its DAC's (development devices).  Returns the COMMISSIONING; ON-COMPLETE
-is called with it when it is done."
+is called with it when it is done, ON-STEP with it whenever it enters a
+step (COMMISSIONING-STEP: :PASE :ARM-FAIL-SAFE :READ-BASIC-INFORMATION
+:REGULATORY-CONFIG :DAC :PAI :ATTESTATION :CSR :ADD-ROOT :ADD-NOC :CASE
+:COMPLETE :DONE), for a progress display."
   (let ((c (%make-commissioning :commissioner commissioner :host host :port port
                                 :passcode passcode :salt salt :iterations iterations
                                 :node-id node-id :country-code country-code :regulatory-location regulatory-location
                                 :fail-safe-seconds fail-safe-seconds :attestation attestation
-                                :case-auth-tags case-auth-tags :on-complete on-complete)))
+                                :case-auth-tags case-auth-tags :on-complete on-complete
+                                :on-step on-step)))
     (unless (member attestation '(:verify :ignore)) (error "ATTESTATION is :VERIFY or :IGNORE, not ~s" attestation))
     (%commissioning-step c :pase)
     c))
